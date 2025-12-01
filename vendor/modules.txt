@@ -2,7 +2,7 @@
 ## explicit; go 1.18
 github.com/BurntSushi/toml
 github.com/BurntSushi/toml/internal
-# github.com/apache/cloudstack-go/v2 v2.18.1
+# github.com/apache/cloudstack-go/v2 v2.19.0
 ## explicit; go 1.23.0
 github.com/apache/cloudstack-go/v2/cloudstack
 # github.com/bahlo/generic-list-go v0.2.0
