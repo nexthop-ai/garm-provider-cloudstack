@@ -41,6 +41,7 @@ type extraSpecs struct {
 	ServiceOfferingID *string  `json:"service_offering_id,omitempty" jsonschema:"description=Override the default service offering ID."`
 	TemplateID        *string  `json:"template_id,omitempty" jsonschema:"description=Override the default template ID."`
 	NetworkIDs        []string `json:"network_ids,omitempty" jsonschema:"description=List of network IDs to attach to the instance."`
+	SSHKeyName        *string  `json:"ssh_key_name,omitempty" jsonschema:"description=Name of the SSH keypair to use for the instance."`
 	DisableUpdates    *bool    `json:"disable_updates,omitempty" jsonschema:"description=Disable automatic updates on the VM."`
 	EnableBootDebug   *bool    `json:"enable_boot_debug,omitempty" jsonschema:"description=Enable boot debug on the VM."`
 	ExtraPackages     []string `json:"extra_packages,omitempty" jsonschema:"description=Extra packages to install on the VM."`
@@ -86,6 +87,7 @@ type RunnerSpec struct {
 	ServiceOfferingID string
 	TemplateID        string
 	NetworkIDs        []string
+	SSHKeyName        string
 	DisableUpdates    bool
 	EnableBootDebug   bool
 	ExtraPackages     []string
@@ -109,6 +111,7 @@ func GetRunnerSpecFromBootstrapParams(cfg *config.Config, data params.BootstrapI
 		ZoneID:            cfg.ZoneID,
 		ServiceOfferingID: cfg.ServiceOfferingID,
 		TemplateID:        cfg.TemplateID,
+		SSHKeyName:        cfg.SSHKeyName,
 		ExtraPackages:     extraSpecs.ExtraPackages,
 		Tools:             tools,
 		BootstrapParams:   data,
@@ -138,6 +141,9 @@ func (r *RunnerSpec) MergeExtraSpecs(extra *extraSpecs) {
 	}
 	if len(extra.NetworkIDs) > 0 {
 		r.NetworkIDs = extra.NetworkIDs
+	}
+	if extra.SSHKeyName != nil && *extra.SSHKeyName != "" {
+		r.SSHKeyName = *extra.SSHKeyName
 	}
 	if extra.DisableUpdates != nil {
 		r.DisableUpdates = *extra.DisableUpdates

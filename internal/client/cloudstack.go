@@ -68,6 +68,9 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 	if len(spec.NetworkIDs) > 0 {
 		params.SetNetworkids(spec.NetworkIDs)
 	}
+	if spec.SSHKeyName != "" {
+		params.SetKeypair(spec.SSHKeyName)
+	}
 
 	resp, err := c.client.VirtualMachine.DeployVirtualMachine(params)
 	if err != nil {

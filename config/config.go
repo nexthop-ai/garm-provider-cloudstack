@@ -40,6 +40,7 @@ type Config struct {
 	ZoneID            string `toml:"zone_id"`
 	ServiceOfferingID string `toml:"service_offering_id"`
 	TemplateID        string `toml:"template_id"`
+	SSHKeyName        string `toml:"ssh_key_name"`
 }
 
 // NewConfig loads and validates the provider configuration from a TOML file.
