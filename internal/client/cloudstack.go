@@ -211,7 +211,7 @@ func (c *CloudStackCli) StopInstance(ctx context.Context, identifier string, for
 	return nil
 }
 
-func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string) error {
+func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, expunge bool) error {
 	vm, err := c.FindOneInstance(ctx, "", identifier)
 	if err != nil {
 		if errors.Is(err, garmErrors.ErrNotFound) {
@@ -220,6 +220,9 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string) 
 		return err
 	}
 	params := c.client.VirtualMachine.NewDestroyVirtualMachineParams(vm.Id)
+	if expunge {
+		params.SetExpunge(true)
+	}
 	if _, err := c.client.VirtualMachine.DestroyVirtualMachine(params); err != nil {
 		if util.IsCloudStackNotFoundErr(err) {
 			return nil

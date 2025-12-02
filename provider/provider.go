@@ -74,7 +74,7 @@ func (p *CloudStackProvider) CreateInstance(ctx context.Context, bootstrapParams
 }
 
 func (p *CloudStackProvider) DeleteInstance(ctx context.Context, instance string) error {
-	if err := p.cli.DestroyInstance(ctx, instance); err != nil {
+	if err := p.cli.DestroyInstance(ctx, instance, p.cli.Config().Expunge); err != nil {
 		return fmt.Errorf("failed to delete instance: %w", err)
 	}
 	return nil

@@ -40,6 +40,7 @@ template         = "gha-runner-ubuntu-2404"
 project          = "my-project"   # optional
 ssh_key_name     = "my-keypair"   # optional
 async_timeout    = "15m"          # optional, default "15m"
+expunge          = true           # optional, default false
 ```
 
 Field description:
@@ -57,6 +58,8 @@ Field description:
   deployments. Supports Go duration strings like `"15m"`, `"1h"`, `"30s"`.
   Default is `"15m"` (15 minutes). Increase this if VM deployments in your
   environment take longer to complete.
+- `expunge`: If `true`, VMs are permanently deleted (expunged) when destroyed
+  instead of lingering in the "Destroyed" state. Default is `false`.
 
 Each resource field (`zone`, `service_offering`, `template`, `project`)
 accepts either a symbolic name or a UUID. If the value looks like a UUID,

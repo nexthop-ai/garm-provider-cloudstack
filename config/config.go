@@ -87,6 +87,11 @@ type Config struct {
 	// Supports Go duration strings like "15m", "1h", "30s".
 	AsyncTimeout Duration `toml:"async_timeout"`
 
+	// Expunge controls whether VMs are permanently deleted when destroyed.
+	// If true, VMs are expunged immediately instead of lingering in "Destroyed" state.
+	// Default: false (VMs remain in "Destroyed" state and can be recovered).
+	Expunge bool `toml:"expunge"`
+
 	// resolved holds the resolved UUIDs after calling ResolveNames()
 	resolved resolvedIDs
 }
