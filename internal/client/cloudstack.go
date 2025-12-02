@@ -156,8 +156,8 @@ func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, p
 		"GARM_POOL_ID":       poolID,
 	}
 	p.SetTags(tags)
-	if c.cfg.ProjectID != "" {
-		p.SetProjectid(c.cfg.ProjectID)
+	if c.cfg.ProjectID() != "" {
+		p.SetProjectid(c.cfg.ProjectID())
 	}
 
 	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)

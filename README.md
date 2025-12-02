@@ -34,9 +34,11 @@ api_key = "your-api-key"
 secret  = "your-secret-key"
 verify_ssl = true
 
-zone_id             = "zone-uuid"
-service_offering_id = "service-offering-uuid"
-template_id         = "template-uuid"
+zone             = "us-west-1"
+service_offering = "2-4096"
+template         = "gha-runner-ubuntu-2404"
+project          = "my-project"   # optional
+ssh_key_name     = "my-keypair"   # optional
 ```
 
 Field description:
@@ -45,9 +47,16 @@ Field description:
 - `api_key`: CloudStack API key for the account that will own the runners.
 - `secret`: CloudStack secret key for the same account.
 - `verify_ssl`: Whether to verify the TLS certificate when connecting to the API.
-- `zone_id`: Default CloudStack zone where instances will be created.
-- `service_offering_id`: Default service offering (flavor) to use for new instances.
-- `template_id`: Default template to use for new instances (Linux image recommended).
+- `zone`: CloudStack zone where instances will be created (name or UUID).
+- `service_offering`: Service offering (compute/flavor) to use for new instances (name or UUID).
+- `template`: Template to use for new instances (name or UUID). A Linux image is recommended.
+- `project`: CloudStack project to deploy instances into (name or UUID). Optional.
+- `ssh_key_name`: Name of an SSH keypair registered in CloudStack to inject into instances. Optional, useful for debugging.
+
+Each resource field (`zone`, `service_offering`, `template`, `project`)
+accepts either a symbolic name or a UUID. If the value looks like a UUID,
+it's used directly; otherwise, the provider resolves the name to a UUID
+via the CloudStack API at startup.
 
 Once you have a config file (for example `/etc/garm/garm-provider-cloudstack.toml`), reference it from the `garm` configuration as an external provider:
 
@@ -90,10 +99,12 @@ Like the AWS provider, the CloudStack provider supports extra per-pool options v
 
 Supported keys:
 
-- `zone_id` (string): Override the default `zone_id` from the config.
-- `service_offering_id` (string): Override the default service offering.
-- `template_id` (string): Override the default template.
-- `network_ids` (array of strings): List of network IDs to attach the instance to.
+- `zone_id` (string): Override the default zone (UUID).
+- `service_offering_id` (string): Override the default service offering (UUID).
+- `template_id` (string): Override the default template (UUID).
+- `project_id` (string): Override the default project (UUID).
+- `network_ids` (array of strings): List of network UUIDs to attach the instance to.
+- `ssh_key_name` (string): Override the SSH keypair name.
 - `disable_updates` (bool): Disable automatic package updates in the guest.
 - `enable_boot_debug` (bool): Enable additional boot-time logging in the guest.
 - `extra_packages` (array of strings): Additional packages to install in the guest.

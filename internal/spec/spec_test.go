@@ -93,13 +93,15 @@ func TestGetRunnerSpecFromBootstrapParams(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		APIURL:            "https://cloudstack.example.com/client/api",
-		APIKey:            "api-key",
-		Secret:            "secret",
-		ZoneID:            "zone-default",
-		ServiceOfferingID: "service-offering-id",
-		TemplateID:        "template-id",
+		APIURL:          "https://cloudstack.example.com/client/api",
+		APIKey:          "api-key",
+		Secret:          "secret",
+		Zone:            "zone-default",
+		ServiceOffering: "service-offering-id",
+		Template:        "template-id",
 	}
+	// Set resolved IDs directly for testing (normally set by ResolveNames())
+	cfg.SetResolvedIDs("zone-default", "service-offering-id", "template-id", "")
 
 	spec, err := GetRunnerSpecFromBootstrapParams(cfg, data, "controller-id")
 	require.NoError(t, err)

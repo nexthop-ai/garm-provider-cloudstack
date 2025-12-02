@@ -31,79 +31,79 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid config",
 			cfg: &Config{
-				APIURL:            "https://cloudstack.example.com/client/api",
-				APIKey:            "api-key",
-				Secret:            "secret",
-				VerifySSL:         true,
-				ZoneID:            "zone-id",
-				ServiceOfferingID: "service-offering-id",
-				TemplateID:        "template-id",
+				APIURL:          "https://cloudstack.example.com/client/api",
+				APIKey:          "api-key",
+				Secret:          "secret",
+				VerifySSL:       true,
+				Zone:            "zone-id",
+				ServiceOffering: "service-offering-id",
+				Template:        "template-id",
 			},
 		},
 		{
 			name: "missing api_url",
 			cfg: &Config{
-				APIKey:            "api-key",
-				Secret:            "secret",
-				ZoneID:            "zone-id",
-				ServiceOfferingID: "service-offering-id",
-				TemplateID:        "template-id",
+				APIKey:          "api-key",
+				Secret:          "secret",
+				Zone:            "zone-id",
+				ServiceOffering: "service-offering-id",
+				Template:        "template-id",
 			},
 			errString: "missing api_url",
 		},
 		{
 			name: "missing api_key",
 			cfg: &Config{
-				APIURL:            "https://cloudstack.example.com/client/api",
-				Secret:            "secret",
-				ZoneID:            "zone-id",
-				ServiceOfferingID: "service-offering-id",
-				TemplateID:        "template-id",
+				APIURL:          "https://cloudstack.example.com/client/api",
+				Secret:          "secret",
+				Zone:            "zone-id",
+				ServiceOffering: "service-offering-id",
+				Template:        "template-id",
 			},
 			errString: "missing api_key",
 		},
 		{
 			name: "missing secret",
 			cfg: &Config{
-				APIURL:            "https://cloudstack.example.com/client/api",
-				APIKey:            "api-key",
-				ZoneID:            "zone-id",
-				ServiceOfferingID: "service-offering-id",
-				TemplateID:        "template-id",
+				APIURL:          "https://cloudstack.example.com/client/api",
+				APIKey:          "api-key",
+				Zone:            "zone-id",
+				ServiceOffering: "service-offering-id",
+				Template:        "template-id",
 			},
 			errString: "missing secret",
 		},
 		{
-			name: "missing zone_id",
+			name: "missing zone",
 			cfg: &Config{
-				APIURL:     "https://cloudstack.example.com/client/api",
-				APIKey:     "api-key",
-				Secret:     "secret",
-				TemplateID: "template-id",
+				APIURL:   "https://cloudstack.example.com/client/api",
+				APIKey:   "api-key",
+				Secret:   "secret",
+				Template: "template-id",
 			},
-			errString: "missing zone_id",
+			errString: "missing zone",
 		},
 		{
-			name: "missing service_offering_id",
+			name: "missing service_offering",
 			cfg: &Config{
-				APIURL:     "https://cloudstack.example.com/client/api",
-				APIKey:     "api-key",
-				Secret:     "secret",
-				ZoneID:     "zone-id",
-				TemplateID: "template-id",
+				APIURL:   "https://cloudstack.example.com/client/api",
+				APIKey:   "api-key",
+				Secret:   "secret",
+				Zone:     "zone-id",
+				Template: "template-id",
 			},
-			errString: "missing service_offering_id",
+			errString: "missing service_offering",
 		},
 		{
-			name: "missing template_id",
+			name: "missing template",
 			cfg: &Config{
-				APIURL:            "https://cloudstack.example.com/client/api",
-				APIKey:            "api-key",
-				Secret:            "secret",
-				ZoneID:            "zone-id",
-				ServiceOfferingID: "service-offering-id",
+				APIURL:          "https://cloudstack.example.com/client/api",
+				APIKey:          "api-key",
+				Secret:          "secret",
+				Zone:            "zone-id",
+				ServiceOffering: "service-offering-id",
 			},
-			errString: "missing template_id",
+			errString: "missing template",
 		},
 	}
 
@@ -120,38 +120,6 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestNewConfig(t *testing.T) {
-	// Create a temporary config file
-	tempFile, err := os.CreateTemp("", "cloudstack-config-*.toml")
-	require.NoError(t, err)
-	defer os.Remove(tempFile.Name())
-
-	content := `
-api_url = "https://cloudstack.example.com/client/api"
-api_key = "api-key"
-secret = "secret"
-verify_ssl = true
-zone_id = "zone-id"
-service_offering_id = "service-offering-id"
-template_id = "template-id"
-`
-	_, err = tempFile.Write([]byte(content))
-	require.NoError(t, err)
-	require.NoError(t, tempFile.Close())
-
-	t.Run("success", func(t *testing.T) {
-		cfg, err := NewConfig(tempFile.Name())
-		require.NoError(t, err)
-		require.Equal(t, &Config{
-			APIURL:            "https://cloudstack.example.com/client/api",
-			APIKey:            "api-key",
-			Secret:            "secret",
-			VerifySSL:         true,
-			ZoneID:            "zone-id",
-			ServiceOfferingID: "service-offering-id",
-			TemplateID:        "template-id",
-		}, cfg)
-	})
-
 	t.Run("missing file", func(t *testing.T) {
 		_, err := NewConfig("/nonexistent/path.toml")
 		require.Error(t, err)
@@ -169,4 +137,29 @@ template_id = "template-id"
 		_, err = NewConfig(badFile.Name())
 		require.Error(t, err)
 	})
+
+	// Note: We can't easily test a successful NewConfig without a real CloudStack
+	// API since ResolveNames() makes API calls to resolve names to UUIDs.
+}
+
+func TestIsUUID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"d9a16f24-9e15-43a7-afd0-baa96a7e5ef3", true},
+		{"D9A16F24-9E15-43A7-AFD0-BAA96A7E5EF3", true},
+		{"us-west-1", false},
+		{"g1.SONiC-builds", false},
+		{"", false},
+		{"not-a-uuid", false},
+		{"d9a16f24-9e15-43a7-afd0-baa96a7e5ef", false},   // too short
+		{"d9a16f24-9e15-43a7-afd0-baa96a7e5ef3a", false}, // too long
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			require.Equal(t, tt.expected, isUUID(tt.input))
+		})
+	}
 }

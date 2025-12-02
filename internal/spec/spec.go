@@ -110,11 +110,11 @@ func GetRunnerSpecFromBootstrapParams(cfg *config.Config, data params.BootstrapI
 	}
 
 	spec := &RunnerSpec{
-		ZoneID:            cfg.ZoneID,
-		ServiceOfferingID: cfg.ServiceOfferingID,
-		TemplateID:        cfg.TemplateID,
+		ZoneID:            cfg.ZoneID(),
+		ServiceOfferingID: cfg.ServiceOfferingID(),
+		TemplateID:        cfg.TemplateID(),
 		SSHKeyName:        cfg.SSHKeyName,
-		ProjectID:         cfg.ProjectID,
+		ProjectID:         cfg.ProjectID(),
 		ExtraPackages:     extraSpecs.ExtraPackages,
 		Tools:             tools,
 		BootstrapParams:   data,
