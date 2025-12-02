@@ -10,7 +10,7 @@ on:
 
 jobs:
   go-tests:
-    runs-on: ubuntu-latest
+    runs-on: garm-staging-ubuntu-small
 
     steps:
       - name: Checkout
