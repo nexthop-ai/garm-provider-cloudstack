@@ -42,6 +42,7 @@ type extraSpecs struct {
 	TemplateID        *string  `json:"template_id,omitempty" jsonschema:"description=Override the default template ID."`
 	NetworkIDs        []string `json:"network_ids,omitempty" jsonschema:"description=List of network IDs to attach to the instance."`
 	SSHKeyName        *string  `json:"ssh_key_name,omitempty" jsonschema:"description=Name of the SSH keypair to use for the instance."`
+	ProjectID         *string  `json:"project_id,omitempty" jsonschema:"description=CloudStack project ID to deploy the instance into."`
 	DisableUpdates    *bool    `json:"disable_updates,omitempty" jsonschema:"description=Disable automatic updates on the VM."`
 	EnableBootDebug   *bool    `json:"enable_boot_debug,omitempty" jsonschema:"description=Enable boot debug on the VM."`
 	ExtraPackages     []string `json:"extra_packages,omitempty" jsonschema:"description=Extra packages to install on the VM."`
@@ -88,6 +89,7 @@ type RunnerSpec struct {
 	TemplateID        string
 	NetworkIDs        []string
 	SSHKeyName        string
+	ProjectID         string
 	DisableUpdates    bool
 	EnableBootDebug   bool
 	ExtraPackages     []string
@@ -112,6 +114,7 @@ func GetRunnerSpecFromBootstrapParams(cfg *config.Config, data params.BootstrapI
 		ServiceOfferingID: cfg.ServiceOfferingID,
 		TemplateID:        cfg.TemplateID,
 		SSHKeyName:        cfg.SSHKeyName,
+		ProjectID:         cfg.ProjectID,
 		ExtraPackages:     extraSpecs.ExtraPackages,
 		Tools:             tools,
 		BootstrapParams:   data,
@@ -144,6 +147,9 @@ func (r *RunnerSpec) MergeExtraSpecs(extra *extraSpecs) {
 	}
 	if extra.SSHKeyName != nil && *extra.SSHKeyName != "" {
 		r.SSHKeyName = *extra.SSHKeyName
+	}
+	if extra.ProjectID != nil && *extra.ProjectID != "" {
+		r.ProjectID = *extra.ProjectID
 	}
 	if extra.DisableUpdates != nil {
 		r.DisableUpdates = *extra.DisableUpdates

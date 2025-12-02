@@ -71,6 +71,9 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 	if spec.SSHKeyName != "" {
 		params.SetKeypair(spec.SSHKeyName)
 	}
+	if spec.ProjectID != "" {
+		params.SetProjectid(spec.ProjectID)
+	}
 
 	resp, err := c.client.VirtualMachine.DeployVirtualMachine(params)
 	if err != nil {
@@ -101,23 +104,35 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 		return nil, fmt.Errorf("empty identifier")
 	}
 	if cs.IsID(identifier) {
-		vm, _, err := c.client.VirtualMachine.GetVirtualMachineByID(identifier)
+		p := c.client.VirtualMachine.NewListVirtualMachinesParams()
+		p.SetId(identifier)
+		p.SetListall(true)
+		if c.cfg.ProjectID() != "" {
+			p.SetProjectid(c.cfg.ProjectID())
+		}
+		resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 		if err != nil {
-			if util.IsCloudStackNotFoundErr(err) {
-				return nil, fmt.Errorf("no such instance %s: %w", identifier, garmErrors.ErrNotFound)
-			}
 			return nil, fmt.Errorf("failed to get instance %s: %w", identifier, err)
 		}
-		return vm, nil
+		if resp.Count == 0 {
+			return nil, fmt.Errorf("no such instance %s: %w", identifier, garmErrors.ErrNotFound)
+		}
+		return resp.VirtualMachines[0], nil
 	}
 
 	p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 	p.SetName(identifier)
 	p.SetListall(true)
-	tags := map[string]string{
-		"GARM_CONTROLLER_ID": controllerID,
+	if c.cfg.ProjectID() != "" {
+		p.SetProjectid(c.cfg.ProjectID())
 	}
-	p.SetTags(tags)
+	// Only filter by controller tag if it's provided
+	if controllerID != "" {
+		tags := map[string]string{
+			"GARM_CONTROLLER_ID": controllerID,
+		}
+		p.SetTags(tags)
+	}
 
 	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 	if err != nil {
@@ -141,6 +156,9 @@ func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, p
 		"GARM_POOL_ID":       poolID,
 	}
 	p.SetTags(tags)
+	if c.cfg.ProjectID != "" {
+		p.SetProjectid(c.cfg.ProjectID)
+	}
 
 	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 	if err != nil {

@@ -32,6 +32,7 @@ import (
 //	zone_id = "..."
 //	service_offering_id = "..."
 //	template_id = "..."
+//	project_id = "..."  # optional
 type Config struct {
 	APIURL            string `toml:"api_url"`
 	APIKey            string `toml:"api_key"`
@@ -41,6 +42,7 @@ type Config struct {
 	ServiceOfferingID string `toml:"service_offering_id"`
 	TemplateID        string `toml:"template_id"`
 	SSHKeyName        string `toml:"ssh_key_name"`
+	ProjectID         string `toml:"project_id"`
 }
 
 // NewConfig loads and validates the provider configuration from a TOML file.
