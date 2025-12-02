@@ -39,6 +39,7 @@ service_offering = "2-4096"
 template         = "gha-runner-ubuntu-2404"
 project          = "my-project"   # optional
 ssh_key_name     = "my-keypair"   # optional
+async_timeout    = "15m"          # optional, default "15m"
 ```
 
 Field description:
@@ -52,6 +53,10 @@ Field description:
 - `template`: Template to use for new instances (name or UUID). A Linux image is recommended.
 - `project`: CloudStack project to deploy instances into (name or UUID). Optional.
 - `ssh_key_name`: Name of an SSH keypair registered in CloudStack to inject into instances. Optional, useful for debugging.
+- `async_timeout`: Timeout for async CloudStack API calls such as VM
+  deployments. Supports Go duration strings like `"15m"`, `"1h"`, `"30s"`.
+  Default is `"15m"` (15 minutes). Increase this if VM deployments in your
+  environment take longer to complete.
 
 Each resource field (`zone`, `service_offering`, `template`, `project`)
 accepts either a symbolic name or a UUID. If the value looks like a UUID,

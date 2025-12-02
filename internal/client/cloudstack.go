@@ -38,7 +38,8 @@ func NewCloudStackCli(cfg *config.Config) (*CloudStackCli, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil config")
 	}
-	cli := cs.NewAsyncClient(cfg.APIURL, cfg.APIKey, cfg.Secret, cfg.VerifySSL)
+	// Use configurable async timeout (default 15 minutes) for slow VM deployments
+	cli := cs.NewAsyncClient(cfg.APIURL, cfg.APIKey, cfg.Secret, cfg.VerifySSL, cs.WithAsyncTimeout(cfg.GetAsyncTimeout()))
 	return &CloudStackCli{cfg: cfg, client: cli}, nil
 }
 

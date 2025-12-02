@@ -18,10 +18,24 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
 )
+
+// Duration is a wrapper around time.Duration that supports TOML text unmarshaling.
+// It allows using human-readable duration strings like "15m", "1h", "30s" in config files.
+type Duration struct {
+	time.Duration
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler for Duration.
+func (d *Duration) UnmarshalText(text []byte) error {
+	var err error
+	d.Duration, err = time.ParseDuration(string(text))
+	return err
+}
 
 // uuidRegex matches a standard UUID format (8-4-4-4-12 hex digits).
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -68,8 +82,24 @@ type Config struct {
 	// SSHKeyName is the name of the SSH keypair to use (optional)
 	SSHKeyName string `toml:"ssh_key_name"`
 
+	// AsyncTimeout is the timeout for async CloudStack API calls (default: 15m).
+	// This is how long the provider will wait for VM deployments to complete.
+	// Supports Go duration strings like "15m", "1h", "30s".
+	AsyncTimeout Duration `toml:"async_timeout"`
+
 	// resolved holds the resolved UUIDs after calling ResolveNames()
 	resolved resolvedIDs
+}
+
+// DefaultAsyncTimeout is the default timeout for async CloudStack API calls (15 minutes).
+const DefaultAsyncTimeout = 15 * time.Minute
+
+// GetAsyncTimeout returns the configured async timeout in seconds, or the default if not set.
+func (c *Config) GetAsyncTimeout() int64 {
+	if c.AsyncTimeout.Duration <= 0 {
+		return int64(DefaultAsyncTimeout.Seconds())
+	}
+	return int64(c.AsyncTimeout.Duration.Seconds())
 }
 
 // resolvedIDs holds the resolved UUIDs for each resource.
