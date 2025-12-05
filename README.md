@@ -119,6 +119,12 @@ Supported keys:
 - `runner_install_template`, `pre_install_scripts`, `extra_context`: Advanced options passed through to the
   common runner installation logic, allowing you to customize how the GitHub runner is installed. These
   behave identically to the same fields in the AWS provider; see the AWS provider README for detailed examples.
+- `nfs_mounts` (array of objects): List of NFS mounts to configure on the runner VM. Each mount object supports:
+  - `server` (string, required): NFS server hostname or IP address.
+  - `server_path` (string, required): Path on the NFS server to mount.
+  - `mount_path` (string, required): Local mount point on the runner VM.
+  - `read_write` (bool, optional): Mount as read-write instead of read-only. Default is `false`.
+  - `options` (string, optional): Custom mount options. Default is `nfsvers=4,ro,soft,timeo=30` (or `rw` if `read_write` is true).
 
 Example `--extra-specs` payload:
 
@@ -152,3 +158,45 @@ garm-cli pool create \
 
 Workers in that pool will be created taking into account both the global provider config and the
 per-pool extra specs.
+
+## NFS Mounts
+
+You can configure NFS mounts to provide shared storage to runner VMs. This is useful for:
+
+- **Build caches**: Share compiled dependencies across builds to speed up CI.
+- **Artifact storage**: Store and retrieve build artifacts across multiple workflow runs.
+- **Large datasets**: Provide read-only access to large files without downloading them each time.
+
+Example with NFS mounts:
+
+```bash
+garm-cli pool create \
+  --os-type linux \
+  --os-arch amd64 \
+  --enabled=true \
+  --flavor medium \
+  --image gha-runner-ubuntu-2404 \
+  --min-idle-runners 1 \
+  --repo <REPO_ID> \
+  --tags cloudstack,linux,with-cache \
+  --provider-name cloudstack \
+  --extra-specs='{
+    "network_ids": ["network-uuid"],
+    "nfs_mounts": [
+      {
+        "server": "nfs.example.com",
+        "server_path": "/exports/build-cache",
+        "mount_path": "/mnt/cache",
+        "read_write": true
+      },
+      {
+        "server": "nfs.example.com",
+        "server_path": "/exports/datasets",
+        "mount_path": "/mnt/data",
+        "read_write": false
+      }
+    ]
+  }'
+```
+
+The NFS mounts are configured during VM boot via cloud-init, before the GitHub runner is installed. The `nfs-common` package is automatically installed if not present in the template.

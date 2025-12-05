@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cloudbase/garm-provider-cloudstack/config"
 	"github.com/cloudbase/garm-provider-common/cloudconfig"
@@ -35,17 +36,27 @@ type ToolFetchFunc func(osType params.OSType, osArch params.OSArch, tools []para
 
 var DefaultToolFetch ToolFetchFunc = util.GetTools
 
+// NFSMount defines an NFS mount to be configured on the runner VM.
+type NFSMount struct {
+	Server     string `json:"server" jsonschema:"description=NFS server hostname or IP address,required"`
+	ServerPath string `json:"server_path" jsonschema:"description=Path on the NFS server to mount,required"`
+	MountPath  string `json:"mount_path" jsonschema:"description=Local mount point on the runner VM,required"`
+	Options    string `json:"options,omitempty" jsonschema:"description=Mount options (default: nfsvers=4,ro,soft,timeo=30)"`
+	ReadWrite  bool   `json:"read_write,omitempty" jsonschema:"description=Mount as read-write instead of read-only (default: false)"`
+}
+
 // extraSpecs defines CloudStack-specific extensions to BootstrapInstance.ExtraSpecs.
 type extraSpecs struct {
-	ZoneID            *string  `json:"zone_id,omitempty" jsonschema:"description=Override the default zone ID."`
-	ServiceOfferingID *string  `json:"service_offering_id,omitempty" jsonschema:"description=Override the default service offering ID."`
-	TemplateID        *string  `json:"template_id,omitempty" jsonschema:"description=Override the default template ID."`
-	NetworkIDs        []string `json:"network_ids,omitempty" jsonschema:"description=List of network IDs to attach to the instance."`
-	SSHKeyName        *string  `json:"ssh_key_name,omitempty" jsonschema:"description=Name of the SSH keypair to use for the instance."`
-	ProjectID         *string  `json:"project_id,omitempty" jsonschema:"description=CloudStack project ID to deploy the instance into."`
-	DisableUpdates    *bool    `json:"disable_updates,omitempty" jsonschema:"description=Disable automatic updates on the VM."`
-	EnableBootDebug   *bool    `json:"enable_boot_debug,omitempty" jsonschema:"description=Enable boot debug on the VM."`
-	ExtraPackages     []string `json:"extra_packages,omitempty" jsonschema:"description=Extra packages to install on the VM."`
+	ZoneID            *string    `json:"zone_id,omitempty" jsonschema:"description=Override the default zone ID."`
+	ServiceOfferingID *string    `json:"service_offering_id,omitempty" jsonschema:"description=Override the default service offering ID."`
+	TemplateID        *string    `json:"template_id,omitempty" jsonschema:"description=Override the default template ID."`
+	NetworkIDs        []string   `json:"network_ids,omitempty" jsonschema:"description=List of network IDs to attach to the instance."`
+	SSHKeyName        *string    `json:"ssh_key_name,omitempty" jsonschema:"description=Name of the SSH keypair to use for the instance."`
+	ProjectID         *string    `json:"project_id,omitempty" jsonschema:"description=CloudStack project ID to deploy the instance into."`
+	DisableUpdates    *bool      `json:"disable_updates,omitempty" jsonschema:"description=Disable automatic updates on the VM."`
+	EnableBootDebug   *bool      `json:"enable_boot_debug,omitempty" jsonschema:"description=Enable boot debug on the VM."`
+	ExtraPackages     []string   `json:"extra_packages,omitempty" jsonschema:"description=Extra packages to install on the VM."`
+	NFSMounts         []NFSMount `json:"nfs_mounts,omitempty" jsonschema:"description=List of NFS mounts to configure on the runner VM."`
 	cloudconfig.CloudConfigSpec
 }
 
@@ -93,6 +104,7 @@ type RunnerSpec struct {
 	DisableUpdates    bool
 	EnableBootDebug   bool
 	ExtraPackages     []string
+	NFSMounts         []NFSMount
 	Tools             params.RunnerApplicationDownload
 	BootstrapParams   params.BootstrapInstance
 	ControllerID      string
@@ -157,6 +169,9 @@ func (r *RunnerSpec) MergeExtraSpecs(extra *extraSpecs) {
 	if extra.EnableBootDebug != nil {
 		r.EnableBootDebug = *extra.EnableBootDebug
 	}
+	if len(extra.NFSMounts) > 0 {
+		r.NFSMounts = extra.NFSMounts
+	}
 }
 
 // Validate performs basic validation of the runner spec.
@@ -176,12 +191,64 @@ func (r *RunnerSpec) Validate() error {
 	return nil
 }
 
+// generateNFSMountScript creates a shell script to mount NFS shares.
+func (r *RunnerSpec) generateNFSMountScript() []byte {
+	if len(r.NFSMounts) == 0 {
+		return nil
+	}
+
+	var script strings.Builder
+	script.WriteString("#!/bin/bash\nset -e\n\n")
+	script.WriteString("# Install NFS client if not present\n")
+	script.WriteString("if ! command -v mount.nfs &> /dev/null; then\n")
+	script.WriteString("    apt-get update && apt-get install -y nfs-common\n")
+	script.WriteString("fi\n\n")
+
+	for _, mount := range r.NFSMounts {
+		options := mount.Options
+		if options == "" {
+			if mount.ReadWrite {
+				options = "nfsvers=4,rw,soft,timeo=30"
+			} else {
+				options = "nfsvers=4,ro,soft,timeo=30"
+			}
+		}
+		script.WriteString(fmt.Sprintf("# Mount %s:%s\n", mount.Server, mount.ServerPath))
+		script.WriteString(fmt.Sprintf("mkdir -p %s\n", mount.MountPath))
+		script.WriteString(fmt.Sprintf("mount -t nfs -o %s %s:%s %s\n", options, mount.Server, mount.ServerPath, mount.MountPath))
+		script.WriteString(fmt.Sprintf("echo 'Mounted %s:%s to %s'\n\n", mount.Server, mount.ServerPath, mount.MountPath))
+	}
+
+	return []byte(script.String())
+}
+
 // ComposeUserData renders and compresses cloud-init / userdata for the VM.
 func (r *RunnerSpec) ComposeUserData() (string, error) {
 	bootstrapParams := r.BootstrapParams
 	bootstrapParams.UserDataOptions.DisableUpdatesOnBoot = r.DisableUpdates
 	bootstrapParams.UserDataOptions.ExtraPackages = r.ExtraPackages
 	bootstrapParams.UserDataOptions.EnableBootDebug = r.EnableBootDebug
+
+	// Add NFS mount script as a pre-install script if NFS mounts are specified
+	if nfsScript := r.generateNFSMountScript(); nfsScript != nil {
+		// Get existing extra specs to preserve any user-defined pre-install scripts
+		specs, err := cloudconfig.GetSpecs(bootstrapParams)
+		if err != nil {
+			return "", fmt.Errorf("failed to get cloud config specs: %w", err)
+		}
+		if specs.PreInstallScripts == nil {
+			specs.PreInstallScripts = make(map[string][]byte)
+		}
+		// Use 00-nfs-mounts.sh to ensure it runs early
+		specs.PreInstallScripts["00-nfs-mounts.sh"] = nfsScript
+
+		// Re-marshal the extra specs back to JSON
+		extraSpecsJSON, err := json.Marshal(specs)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal updated extra specs: %w", err)
+		}
+		bootstrapParams.ExtraSpecs = extraSpecsJSON
+	}
 
 	var udata []byte
 	switch bootstrapParams.OSType {

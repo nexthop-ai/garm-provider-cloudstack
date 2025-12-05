@@ -163,3 +163,79 @@ func TestRunnerSpecValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestNFSMountExtraSpecs(t *testing.T) {
+	nfsMountsJSON := json.RawMessage(`{
+		"network_ids": ["net1"],
+		"nfs_mounts": [
+			{
+				"server": "nfs.example.com",
+				"server_path": "/exports/cache",
+				"mount_path": "/mnt/cache",
+				"read_write": false
+			},
+			{
+				"server": "nfs.example.com",
+				"server_path": "/exports/artifacts",
+				"mount_path": "/mnt/artifacts",
+				"read_write": true,
+				"options": "nfsvers=4,rw,hard,timeo=60"
+			}
+		]
+	}`)
+
+	bootstrap := params.BootstrapInstance{ExtraSpecs: nfsMountsJSON}
+
+	spec, err := newExtraSpecsFromBootstrapData(bootstrap)
+	require.NoError(t, err)
+	require.Len(t, spec.NFSMounts, 2)
+
+	require.Equal(t, "nfs.example.com", spec.NFSMounts[0].Server)
+	require.Equal(t, "/exports/cache", spec.NFSMounts[0].ServerPath)
+	require.Equal(t, "/mnt/cache", spec.NFSMounts[0].MountPath)
+	require.False(t, spec.NFSMounts[0].ReadWrite)
+	require.Empty(t, spec.NFSMounts[0].Options)
+
+	require.Equal(t, "nfs.example.com", spec.NFSMounts[1].Server)
+	require.Equal(t, "/exports/artifacts", spec.NFSMounts[1].ServerPath)
+	require.Equal(t, "/mnt/artifacts", spec.NFSMounts[1].MountPath)
+	require.True(t, spec.NFSMounts[1].ReadWrite)
+	require.Equal(t, "nfsvers=4,rw,hard,timeo=60", spec.NFSMounts[1].Options)
+}
+
+func TestGenerateNFSMountScript(t *testing.T) {
+	spec := &RunnerSpec{
+		NFSMounts: []NFSMount{
+			{
+				Server:     "nfs.example.com",
+				ServerPath: "/exports/cache",
+				MountPath:  "/mnt/cache",
+				ReadWrite:  false,
+			},
+			{
+				Server:     "nfs.example.com",
+				ServerPath: "/exports/artifacts",
+				MountPath:  "/mnt/artifacts",
+				ReadWrite:  true,
+				Options:    "nfsvers=4,rw,hard,timeo=60",
+			},
+		},
+	}
+
+	script := spec.generateNFSMountScript()
+	require.NotNil(t, script)
+
+	scriptStr := string(script)
+	require.Contains(t, scriptStr, "#!/bin/bash")
+	require.Contains(t, scriptStr, "apt-get update && apt-get install -y nfs-common")
+	require.Contains(t, scriptStr, "mkdir -p /mnt/cache")
+	require.Contains(t, scriptStr, "mount -t nfs -o nfsvers=4,ro,soft,timeo=30 nfs.example.com:/exports/cache /mnt/cache")
+	require.Contains(t, scriptStr, "mkdir -p /mnt/artifacts")
+	require.Contains(t, scriptStr, "mount -t nfs -o nfsvers=4,rw,hard,timeo=60 nfs.example.com:/exports/artifacts /mnt/artifacts")
+}
+
+func TestGenerateNFSMountScriptEmpty(t *testing.T) {
+	spec := &RunnerSpec{}
+	script := spec.generateNFSMountScript()
+	require.Nil(t, script)
+}
