@@ -91,15 +91,22 @@ garm-cli pool create \
     --os-type linux \
     --os-arch amd64 \
     --enabled=true \
-    --flavor small \
-    --image <template-name-or-id> \
+    --flavor g1.medium \
+    --image gha-runner-ubuntu-2404 \
     --min-idle-runners 0 \
     --repo <REPO_OR_ORG_ID> \
     --tags cloudstack,linux \
     --provider-name cloudstack
 ```
 
-The exact values for `--flavor` and `--image` depend on how your CloudStack installation maps templates and service offerings. The provider will tag created instances with the controller and pool identifiers so that they can be discovered and cleaned up.
+The `--flavor` and `--image` options accept either names or UUIDs:
+
+- `--flavor`: Maps to the CloudStack **service offering** (compute size). If a name is provided, it will be resolved to a UUID at VM creation time.
+- `--image`: Maps to the CloudStack **template** (OS image). If a name is provided, it will be resolved to a UUID at VM creation time.
+
+If `--flavor` or `--image` are not specified, the provider falls back to the defaults from the config file (`service_offering` and `template`).
+
+The provider will tag created instances with the controller and pool identifiers so that they can be discovered and cleaned up.
 
 ## Extra specs
 

@@ -53,14 +53,34 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 		return "", fmt.Errorf("invalid nil runner spec")
 	}
 
+	// Resolve --flavor override from CLI if provided
+	serviceOfferingID := spec.ServiceOfferingID
+	if spec.BootstrapParams.Flavor != "" {
+		resolved, err := c.ResolveServiceOffering(spec.BootstrapParams.Flavor)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve flavor %q: %w", spec.BootstrapParams.Flavor, err)
+		}
+		serviceOfferingID = resolved
+	}
+
+	// Resolve --image override from CLI if provided
+	templateID := spec.TemplateID
+	if spec.BootstrapParams.Image != "" {
+		resolved, err := c.ResolveTemplate(spec.BootstrapParams.Image, spec.ZoneID, spec.ProjectID)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve image %q: %w", spec.BootstrapParams.Image, err)
+		}
+		templateID = resolved
+	}
+
 	udata, err := spec.ComposeUserData()
 	if err != nil {
 		return "", fmt.Errorf("failed to compose user data: %w", err)
 	}
 
 	params := c.client.VirtualMachine.NewDeployVirtualMachineParams(
-		spec.ServiceOfferingID,
-		spec.TemplateID,
+		serviceOfferingID,
+		templateID,
 		spec.ZoneID,
 	)
 	params.SetName(spec.BootstrapParams.Name)
@@ -230,4 +250,47 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 		return fmt.Errorf("failed to destroy instance: %w", err)
 	}
 	return nil
+}
+
+// ResolveServiceOffering resolves a service offering name or UUID to a UUID.
+// If the input is already a UUID, it's returned as-is.
+func (c *CloudStackCli) ResolveServiceOffering(nameOrID string) (string, error) {
+	if nameOrID == "" {
+		return "", fmt.Errorf("empty service offering")
+	}
+	if cs.IsID(nameOrID) {
+		return nameOrID, nil
+	}
+	so, _, err := c.client.ServiceOffering.GetServiceOfferingByName(nameOrID)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve service_offering %q: %w", nameOrID, err)
+	}
+	return so.Id, nil
+}
+
+// ResolveTemplate resolves a template name or UUID to a UUID.
+// If the input is already a UUID, it's returned as-is.
+func (c *CloudStackCli) ResolveTemplate(nameOrID, zoneID, projectID string) (string, error) {
+	if nameOrID == "" {
+		return "", fmt.Errorf("empty template")
+	}
+	if cs.IsID(nameOrID) {
+		return nameOrID, nil
+	}
+	p := c.client.Template.NewListTemplatesParams("executable")
+	p.SetName(nameOrID)
+	if zoneID != "" {
+		p.SetZoneid(zoneID)
+	}
+	if projectID != "" {
+		p.SetProjectid(projectID)
+	}
+	resp, err := c.client.Template.ListTemplates(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve template %q: %w", nameOrID, err)
+	}
+	if resp.Count == 0 {
+		return "", fmt.Errorf("template %q not found", nameOrID)
+	}
+	return resp.Templates[0].Id, nil
 }
