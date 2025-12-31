@@ -72,7 +72,10 @@ func IsCloudStackNotFoundErr(err error) bool {
 	if errors.Is(err, cs.AsyncTimeoutErr) {
 		return false
 	}
+	errLower := strings.ToLower(err.Error())
 	// The generated client typically returns an error string containing
 	// "No match found for" when a resource does not exist.
-	return strings.Contains(strings.ToLower(err.Error()), "no match found for")
+	// CloudStack also returns "entity does not exist" for invalid UUIDs.
+	return strings.Contains(errLower, "no match found for") ||
+		strings.Contains(errLower, "entity does not exist")
 }

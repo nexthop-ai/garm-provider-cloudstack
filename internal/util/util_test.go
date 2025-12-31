@@ -116,6 +116,11 @@ func TestIsCloudStackNotFoundErr(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "entity does not exist error",
+			err:  errors.New("Unable to execute API command listvirtualmachines due to invalid value. Invalid parameter id value=abc due to incorrect long value format, or entity does not exist"),
+			want: true,
+		},
+		{
 			name: "other error",
 			err:  errors.New("some other error"),
 			want: false,

@@ -133,6 +133,10 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 		}
 		resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 		if err != nil {
+			// CloudStack returns an error for invalid/non-existent UUIDs
+			if util.IsCloudStackNotFoundErr(err) {
+				return nil, fmt.Errorf("no such instance %s: %w", identifier, garmErrors.ErrNotFound)
+			}
 			return nil, fmt.Errorf("failed to get instance %s: %w", identifier, err)
 		}
 		if resp.Count == 0 {
