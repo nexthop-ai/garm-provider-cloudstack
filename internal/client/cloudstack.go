@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
@@ -174,11 +175,19 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 
 // ListInstancesByPool lists all non-destroyed instances for a given pool.
 func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, poolID string) ([]*cs.VirtualMachine, error) {
+	slog.Debug("ListInstancesByPool: querying CloudStack",
+		"controller_id", controllerID,
+		"pool_id", poolID,
+		"project_id", c.cfg.ProjectID())
+
 	p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 	p.SetListall(true)
+	// IMPORTANT: Only filter by GARM_CONTROLLER_ID here. CloudStack's tag filtering
+	// uses a logical OR when multiple tags are specified (not AND as one might expect).
+	// This undocumented behavior was confirmed by reading the CloudStack source code.
+	// We must filter by GARM_POOL_ID on the client side after receiving the results.
 	tags := map[string]string{
 		"GARM_CONTROLLER_ID": controllerID,
-		"GARM_POOL_ID":       poolID,
 	}
 	p.SetTags(tags)
 	if c.cfg.ProjectID() != "" {
@@ -187,20 +196,59 @@ func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, p
 
 	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 	if err != nil {
+		slog.Error("ListInstancesByPool: CloudStack API error",
+			"controller_id", controllerID,
+			"pool_id", poolID,
+			"error", err)
 		return nil, fmt.Errorf("failed to list instances: %w", err)
 	}
+
+	slog.Debug("ListInstancesByPool: CloudStack returned VMs",
+		"controller_id", controllerID,
+		"pool_id", poolID,
+		"total_count", resp.Count)
+
 	var out []*cs.VirtualMachine
 	for _, vm := range resp.VirtualMachines {
 		if vm == nil {
 			continue
 		}
+
+		// Extract pool_id tag for client-side filtering (see comment above about CloudStack OR behavior)
+		var vmPoolID string
+		for _, tag := range vm.Tags {
+			if tag.Key == "GARM_POOL_ID" {
+				vmPoolID = tag.Value
+				break
+			}
+		}
+
+		// Client-side filtering: only include VMs that match the requested pool_id
+		if vmPoolID != poolID {
+			slog.Debug("ListInstancesByPool: skipping VM with different pool_id",
+				"vm_name", vm.Name,
+				"vm_id", vm.Id,
+				"requested_pool_id", poolID,
+				"vm_pool_id", vmPoolID)
+			continue
+		}
+
 		// Filter out destroyed/expunging instances; garm is not interested in them.
 		state := strings.ToLower(vm.State)
 		if state == "destroyed" || state == "expunging" {
+			slog.Debug("ListInstancesByPool: skipping destroyed/expunging VM",
+				"vm_name", vm.Name,
+				"vm_id", vm.Id,
+				"state", vm.State)
 			continue
 		}
 		out = append(out, vm)
 	}
+
+	slog.Debug("ListInstancesByPool: completed",
+		"controller_id", controllerID,
+		"pool_id", poolID,
+		"returned_count", len(out))
 	return out, nil
 }
 

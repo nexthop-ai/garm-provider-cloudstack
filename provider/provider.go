@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/cloudbase/garm-provider-cloudstack/config"
 	"github.com/cloudbase/garm-provider-cloudstack/internal/client"
@@ -55,14 +56,30 @@ func NewCloudStackProvider(ctx context.Context, configPath, controllerID string)
 }
 
 func (p *CloudStackProvider) CreateInstance(ctx context.Context, bootstrapParams params.BootstrapInstance) (params.ProviderInstance, error) {
+	slog.Debug("CloudStackProvider.CreateInstance: starting",
+		"instance_name", bootstrapParams.Name,
+		"pool_id", bootstrapParams.PoolID,
+		"controller_id", p.controllerID)
+
 	spec, err := spec.GetRunnerSpecFromBootstrapParams(p.cli.Config(), bootstrapParams, p.controllerID)
 	if err != nil {
 		return params.ProviderInstance{}, fmt.Errorf("failed to get runner spec: %w", err)
 	}
+
 	id, err := p.cli.CreateRunningInstance(ctx, spec)
 	if err != nil {
+		slog.Error("CloudStackProvider.CreateInstance: failed to create VM",
+			"instance_name", bootstrapParams.Name,
+			"pool_id", bootstrapParams.PoolID,
+			"error", err)
 		return params.ProviderInstance{}, fmt.Errorf("failed to create instance: %w", err)
 	}
+
+	slog.Debug("CloudStackProvider.CreateInstance: VM created successfully",
+		"instance_name", bootstrapParams.Name,
+		"provider_id", id,
+		"pool_id", bootstrapParams.PoolID)
+
 	inst := params.ProviderInstance{
 		ProviderID: id,
 		Name:       spec.BootstrapParams.Name,
@@ -74,16 +91,33 @@ func (p *CloudStackProvider) CreateInstance(ctx context.Context, bootstrapParams
 }
 
 func (p *CloudStackProvider) DeleteInstance(ctx context.Context, instance string) error {
+	slog.Debug("CloudStackProvider.DeleteInstance: deleting instance",
+		"instance", instance,
+		"controller_id", p.controllerID,
+		"expunge", p.cli.Config().Expunge)
+
 	if err := p.cli.DestroyInstance(ctx, instance, p.cli.Config().Expunge); err != nil {
+		slog.Error("CloudStackProvider.DeleteInstance: failed to delete instance",
+			"instance", instance,
+			"error", err)
 		return fmt.Errorf("failed to delete instance: %w", err)
 	}
+
+	slog.Debug("CloudStackProvider.DeleteInstance: instance deleted successfully",
+		"instance", instance)
 	return nil
 }
 
 func (p *CloudStackProvider) GetInstance(ctx context.Context, instance string) (params.ProviderInstance, error) {
+	slog.Debug("CloudStackProvider.GetInstance: looking up instance",
+		"instance", instance,
+		"controller_id", p.controllerID)
+
 	vm, err := p.cli.FindOneInstance(ctx, p.controllerID, instance)
 	if err != nil {
 		if errors.Is(err, garmErrors.ErrNotFound) {
+			slog.Debug("CloudStackProvider.GetInstance: instance not found",
+				"instance", instance)
 			return params.ProviderInstance{}, nil
 		}
 		return params.ProviderInstance{}, fmt.Errorf("failed to get VM details: %w", err)
@@ -92,14 +126,27 @@ func (p *CloudStackProvider) GetInstance(ctx context.Context, instance string) (
 	if err != nil {
 		return params.ProviderInstance{}, fmt.Errorf("failed to convert instance: %w", err)
 	}
+
+	slog.Debug("CloudStackProvider.GetInstance: found instance",
+		"instance", instance,
+		"provider_id", providerInstance.ProviderID,
+		"status", providerInstance.Status)
 	return providerInstance, nil
 }
 
 func (p *CloudStackProvider) ListInstances(ctx context.Context, poolID string) ([]params.ProviderInstance, error) {
+	slog.Debug("CloudStackProvider.ListInstances: listing instances",
+		"pool_id", poolID,
+		"controller_id", p.controllerID)
+
 	vms, err := p.cli.ListInstancesByPool(ctx, p.controllerID, poolID)
 	if err != nil {
+		slog.Error("CloudStackProvider.ListInstances: failed to list instances",
+			"pool_id", poolID,
+			"error", err)
 		return nil, fmt.Errorf("failed to list instances: %w", err)
 	}
+
 	providerInstances := make([]params.ProviderInstance, 0, len(vms))
 	for _, vm := range vms {
 		inst, err := util.CloudStackInstanceToParamsInstance(vm)
@@ -108,6 +155,10 @@ func (p *CloudStackProvider) ListInstances(ctx context.Context, poolID string) (
 		}
 		providerInstances = append(providerInstances, inst)
 	}
+
+	slog.Debug("CloudStackProvider.ListInstances: completed",
+		"pool_id", poolID,
+		"total_instances", len(providerInstances))
 	return providerInstances, nil
 }
 
