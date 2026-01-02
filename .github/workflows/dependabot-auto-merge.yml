@@ -1,25 +1,38 @@
-name: Dependabot auto-merge
-on: pull_request
+name: Auto-merge dependency updates
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  dependabot:
+  auto-merge:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: github.actor == 'dependabot[bot]' || startsWith(github.head_ref, 'update-go-')
     steps:
       - name: Dependabot metadata
         id: metadata
+        if: github.actor == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Auto-merge Dependabot PRs
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Approve Go version update PR
+        if: startsWith(github.head_ref, 'update-go-')
+        run: gh pr review --approve "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Enable auto-merge
+        if: |
+          startsWith(github.head_ref, 'update-go-') ||
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

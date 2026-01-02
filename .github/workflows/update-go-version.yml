@@ -1,0 +1,85 @@
+name: Update Go Version
+
+on:
+  schedule:
+    # Run daily at 04:30 UTC (after dependabot runs at 04:00)
+    - cron: "30 4 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-go:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Get latest Go version
+        id: go-version
+        run: |
+          # Fetch the latest stable Go version from golang.org
+          LATEST=$(curl -sL 'https://go.dev/dl/?mode=json' | jq -r '.[0].version' | sed 's/go//')
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+          # Get current toolchain version from go.mod
+          CURRENT=$(grep '^toolchain go' go.mod | sed 's/toolchain go//' || echo "")
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+          echo "Latest Go version: $LATEST"
+          echo "Current toolchain: $CURRENT"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.go-version.outputs.latest }}" != "${{ steps.go-version.outputs.current }}" ] && [ -n "${{ steps.go-version.outputs.current }}" ]; then
+            echo "update=true" >> $GITHUB_OUTPUT
+            echo "Update needed: ${{ steps.go-version.outputs.current }} -> ${{ steps.go-version.outputs.latest }}"
+          else
+            echo "update=false" >> $GITHUB_OUTPUT
+            echo "No update needed"
+          fi
+
+      - name: Setup Go
+        if: steps.check.outputs.update == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go-version.outputs.latest }}
+
+      - name: Update go.mod
+        if: steps.check.outputs.update == 'true'
+        run: |
+          # Extract major.minor from latest version (e.g., 1.25.5 -> 1.25)
+          LATEST="${{ steps.go-version.outputs.latest }}"
+          MAJOR_MINOR=$(echo "$LATEST" | cut -d. -f1,2)
+
+          # Update go directive to major.minor.0
+          sed -i "s/^go [0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?$/go ${MAJOR_MINOR}.0/" go.mod
+
+          # Update toolchain directive
+          sed -i "s/^toolchain go[0-9]\+\.[0-9]\+\.[0-9]\+$/toolchain go${LATEST}/" go.mod
+
+          # Run go mod tidy to update go.sum
+          go mod tidy
+
+          echo "Updated go.mod:"
+          head -10 go.mod
+
+      - name: Create Pull Request
+        if: steps.check.outputs.update == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(deps): update Go toolchain to ${{ steps.go-version.outputs.latest }}"
+          title: "chore(deps): update Go toolchain to ${{ steps.go-version.outputs.latest }}"
+          body: |
+            Updates Go toolchain from `${{ steps.go-version.outputs.current }}` to `${{ steps.go-version.outputs.latest }}`.
+
+            This is an automated PR created by the update-go-version workflow.
+
+            Release notes: https://go.dev/doc/devel/release#go${{ steps.go-version.outputs.latest }}
+          branch: update-go-${{ steps.go-version.outputs.latest }}
+          delete-branch: true
+          labels: dependencies,go
