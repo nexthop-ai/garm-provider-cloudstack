@@ -26,7 +26,8 @@ import (
 	"github.com/cloudbase/garm-provider-cloudstack/internal/spec"
 	"github.com/cloudbase/garm-provider-cloudstack/internal/util"
 	garmErrors "github.com/cloudbase/garm-provider-common/errors"
-	execution "github.com/cloudbase/garm-provider-common/execution/v0.1.0"
+	"github.com/cloudbase/garm-provider-common/execution/common"
+	execution "github.com/cloudbase/garm-provider-common/execution/v0.1.1"
 	"github.com/cloudbase/garm-provider-common/params"
 )
 
@@ -183,4 +184,31 @@ func (p *CloudStackProvider) Start(ctx context.Context, instance string) error {
 
 func (p *CloudStackProvider) GetVersion(ctx context.Context) string {
 	return Version
+}
+
+// GetSupportedInterfaceVersions returns the list of provider interface versions this provider supports.
+func (p *CloudStackProvider) GetSupportedInterfaceVersions(ctx context.Context) []string {
+	return []string{common.Version010, common.Version011}
+}
+
+// ValidatePoolInfo validates pool configuration before creating instances.
+func (p *CloudStackProvider) ValidatePoolInfo(ctx context.Context, image string, flavor string, providerConfig string, extraspecs string) error {
+	// Basic validation - we could add more checks here in the future
+	// For now, we rely on the JSON schema validation for extraspecs
+	if extraspecs != "" {
+		if err := spec.ValidateExtraSpecs(extraspecs); err != nil {
+			return fmt.Errorf("invalid extra_specs: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetConfigJSONSchema returns the JSON schema for the provider configuration.
+func (p *CloudStackProvider) GetConfigJSONSchema(ctx context.Context) (string, error) {
+	return config.GetJSONSchema()
+}
+
+// GetExtraSpecsJSONSchema returns the JSON schema for the provider's extra_specs.
+func (p *CloudStackProvider) GetExtraSpecsJSONSchema(ctx context.Context) (string, error) {
+	return spec.GetExtraSpecsJSONSchema()
 }

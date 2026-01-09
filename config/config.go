@@ -16,12 +16,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
+	"github.com/invopop/jsonschema"
 )
 
 // Duration is a wrapper around time.Duration that supports TOML text unmarshaling.
@@ -255,4 +257,31 @@ func (c *Config) resolveNames() error {
 	}
 
 	return nil
+}
+
+// configSchema is a struct that mirrors Config but with JSON schema tags for documentation.
+// The actual Config uses TOML tags, but GARM expects a JSON schema for validation.
+type configSchema struct {
+	APIURL          string `json:"api_url" jsonschema:"required,description=CloudStack API URL"`
+	APIKey          string `json:"api_key" jsonschema:"required,description=CloudStack API key"`
+	Secret          string `json:"secret" jsonschema:"required,description=CloudStack API secret"`
+	VerifySSL       bool   `json:"verify_ssl,omitempty" jsonschema:"description=Verify SSL certificates (default: false)"`
+	Zone            string `json:"zone" jsonschema:"required,description=CloudStack zone name or UUID"`
+	ServiceOffering string `json:"service_offering" jsonschema:"required,description=Compute offering name or UUID"`
+	Template        string `json:"template" jsonschema:"required,description=VM template name or UUID"`
+	Project         string `json:"project,omitempty" jsonschema:"description=CloudStack project name or UUID (optional)"`
+	SSHKeyName      string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
+	AsyncTimeout    string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
+	Expunge         bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
+}
+
+// GetJSONSchema returns the JSON schema for the provider configuration.
+func GetJSONSchema() (string, error) {
+	reflector := jsonschema.Reflector{AllowAdditionalProperties: false}
+	schema := reflector.Reflect(configSchema{})
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON schema: %w", err)
+	}
+	return string(data), nil
 }

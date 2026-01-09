@@ -65,6 +65,24 @@ func generateJSONSchema() *jsonschema.Schema {
 	return reflector.Reflect(extraSpecs{})
 }
 
+// GetExtraSpecsJSONSchema returns the JSON schema for the provider's extra_specs as a string.
+func GetExtraSpecsJSONSchema() (string, error) {
+	schema := generateJSONSchema()
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON schema: %w", err)
+	}
+	return string(data), nil
+}
+
+// ValidateExtraSpecs validates the extra_specs JSON against the schema.
+func ValidateExtraSpecs(extraspecs string) error {
+	if extraspecs == "" {
+		return nil
+	}
+	return jsonSchemaValidation(json.RawMessage(extraspecs))
+}
+
 func jsonSchemaValidation(schema json.RawMessage) error {
 	jsonSchema := generateJSONSchema()
 	schemaLoader := gojsonschema.NewGoLoader(jsonSchema)
