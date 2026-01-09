@@ -79,6 +79,12 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 		return "", fmt.Errorf("failed to compose user data: %w", err)
 	}
 
+	// Resolve network names to IDs (accepts both names and UUIDs)
+	networkIDs, err := c.ResolveNetworks(spec.NetworkIDs, spec.ZoneID, spec.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve networks: %w", err)
+	}
+
 	params := c.client.VirtualMachine.NewDeployVirtualMachineParams(
 		serviceOfferingID,
 		templateID,
@@ -87,8 +93,8 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 	params.SetName(spec.BootstrapParams.Name)
 	params.SetDisplayname(spec.BootstrapParams.Name)
 	params.SetUserdata(udata)
-	if len(spec.NetworkIDs) > 0 {
-		params.SetNetworkids(spec.NetworkIDs)
+	if len(networkIDs) > 0 {
+		params.SetNetworkids(networkIDs)
 	}
 	if spec.SSHKeyName != "" {
 		params.SetKeypair(spec.SSHKeyName)
@@ -345,4 +351,109 @@ func (c *CloudStackCli) ResolveTemplate(nameOrID, zoneID, projectID string) (str
 		return "", fmt.Errorf("template %q not found", nameOrID)
 	}
 	return resp.Templates[0].Id, nil
+}
+
+// ResolveVPC resolves a VPC name or UUID to a UUID.
+// If the input is already a UUID, it's returned as-is.
+func (c *CloudStackCli) ResolveVPC(nameOrID, zoneID, projectID string) (string, error) {
+	if nameOrID == "" {
+		return "", fmt.Errorf("empty VPC")
+	}
+	if cs.IsID(nameOrID) {
+		return nameOrID, nil
+	}
+	p := c.client.VPC.NewListVPCsParams()
+	p.SetListall(true)
+	p.SetName(nameOrID)
+	if zoneID != "" {
+		p.SetZoneid(zoneID)
+	}
+	if projectID != "" {
+		p.SetProjectid(projectID)
+	}
+	resp, err := c.client.VPC.ListVPCs(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to list VPCs: %w", err)
+	}
+	if resp.Count == 0 {
+		return "", fmt.Errorf("VPC %q not found", nameOrID)
+	}
+	// Find exact match (ListVPCs does substring matching)
+	for _, vpc := range resp.VPCs {
+		if vpc.Name == nameOrID {
+			return vpc.Id, nil
+		}
+	}
+	return "", fmt.Errorf("VPC %q not found", nameOrID)
+}
+
+// ResolveNetwork resolves a network name or UUID to a UUID.
+// If the input is already a UUID, it's returned as-is.
+// Supports "vpc-name/network-name" syntax for VPC-scoped networks.
+func (c *CloudStackCli) ResolveNetwork(nameOrID, zoneID, projectID string) (string, error) {
+	if nameOrID == "" {
+		return "", fmt.Errorf("empty network")
+	}
+	if cs.IsID(nameOrID) {
+		return nameOrID, nil
+	}
+
+	// Check for "vpc-name/network-name" syntax
+	var vpcID, networkName string
+	if idx := strings.Index(nameOrID, "/"); idx > 0 && idx < len(nameOrID)-1 {
+		vpcName := nameOrID[:idx]
+		networkName = nameOrID[idx+1:]
+		// Resolve VPC name to ID
+		var err error
+		vpcID, err = c.ResolveVPC(vpcName, zoneID, projectID)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve VPC in %q: %w", nameOrID, err)
+		}
+	} else {
+		networkName = nameOrID
+	}
+
+	p := c.client.Network.NewListNetworksParams()
+	p.SetListall(true)
+	p.SetCanusefordeploy(true)
+	if zoneID != "" {
+		p.SetZoneid(zoneID)
+	}
+	if projectID != "" {
+		p.SetProjectid(projectID)
+	}
+	if vpcID != "" {
+		p.SetVpcid(vpcID)
+	}
+	resp, err := c.client.Network.ListNetworks(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to list networks: %w", err)
+	}
+	// Find the network by name (exact match)
+	for _, net := range resp.Networks {
+		if net.Name == networkName {
+			return net.Id, nil
+		}
+	}
+	if vpcID != "" {
+		return "", fmt.Errorf("network %q not found in VPC", nameOrID)
+	}
+	return "", fmt.Errorf("network %q not found", nameOrID)
+}
+
+// ResolveNetworks resolves a list of network names or UUIDs to UUIDs.
+// Supports "vpc-name/network-name" syntax for VPC-scoped networks.
+func (c *CloudStackCli) ResolveNetworks(namesOrIDs []string, zoneID, projectID string) ([]string, error) {
+	if len(namesOrIDs) == 0 {
+		return nil, nil
+	}
+	resolved := make([]string, 0, len(namesOrIDs))
+	for _, nameOrID := range namesOrIDs {
+		id, err := c.ResolveNetwork(nameOrID, zoneID, projectID)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, id)
+	}
+	return resolved, nil
 }
