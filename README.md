@@ -118,7 +118,10 @@ Supported keys:
 - `service_offering_id` (string): Override the default service offering (UUID).
 - `template_id` (string): Override the default template (UUID).
 - `project_id` (string): Override the default project (UUID).
-- `network_ids` (array of strings): List of network UUIDs to attach the instance to.
+- `network_ids` (array of strings): List of networks to attach the instance to. Supports:
+  - **UUIDs**: Direct network UUID (e.g., `"a1b2c3d4-..."`)
+  - **Network names**: Simple network name (e.g., `"my-network"`)
+  - **VPC-scoped names**: `"vpc-name/network-name"` syntax for networks inside a VPC (e.g., `"my-vpc/runners-network"`)
 - `ssh_key_name` (string): Override the SSH keypair name.
 - `disable_updates` (bool): Disable automatic package updates in the guest.
 - `enable_boot_debug` (bool): Enable additional boot-time logging in the guest.
@@ -140,12 +143,14 @@ Example `--extra-specs` payload:
   "zone_id": "zone-override-uuid",
   "service_offering_id": "offering-override-uuid",
   "template_id": "template-override-uuid",
-  "network_ids": ["net-uuid-1", "net-uuid-2"],
+  "network_ids": ["my-vpc/runners-network", "shared-network"],
   "disable_updates": true,
   "enable_boot_debug": true,
   "extra_packages": ["tmux", "htop"]
 }
 ```
+
+In this example, `network_ids` uses both VPC-scoped syntax (`my-vpc/runners-network`) and a simple network name (`shared-network`).
 
 You can set extra specs when creating a pool, for example:
 
@@ -188,7 +193,7 @@ garm-cli pool create \
   --tags cloudstack,linux,with-cache \
   --provider-name cloudstack \
   --extra-specs='{
-    "network_ids": ["network-uuid"],
+    "network_ids": ["my-vpc/runners-network"],
     "nfs_mounts": [
       {
         "server": "nfs.example.com",
