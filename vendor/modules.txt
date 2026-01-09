@@ -76,8 +76,8 @@ github.com/xeipuuv/gojsonschema
 # go.uber.org/mock v0.5.0
 ## explicit; go 1.22
 go.uber.org/mock/gomock
-# golang.org/x/crypto v0.39.0
-## explicit; go 1.23.0
+# golang.org/x/crypto v0.45.0
+## explicit; go 1.24.0
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/chacha20
@@ -85,8 +85,8 @@ golang.org/x/crypto/chacha20poly1305
 golang.org/x/crypto/hkdf
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
-# golang.org/x/sys v0.33.0
-## explicit; go 1.23.0
+# golang.org/x/sys v0.38.0
+## explicit; go 1.24.0
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 # gopkg.in/natefinch/lumberjack.v2 v2.2.1
