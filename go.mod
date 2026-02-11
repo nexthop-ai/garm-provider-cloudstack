@@ -1,8 +1,6 @@
 module github.com/cloudbase/garm-provider-cloudstack
 
-go 1.25.0
-
-toolchain go1.25.5
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
