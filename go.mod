@@ -7,7 +7,7 @@ toolchain go1.25.5
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/apache/cloudstack-go/v2 v2.19.0
-	github.com/cloudbase/garm-provider-common v0.1.8-0.20251001105909-bbcacae60e7c
+	github.com/cloudbase/garm-provider-common v0.1.8
 	github.com/invopop/jsonschema v0.13.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
