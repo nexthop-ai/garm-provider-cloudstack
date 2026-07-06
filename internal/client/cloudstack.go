@@ -305,9 +305,39 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 		if util.IsCloudStackNotFoundErr(err) {
 			return nil
 		}
+		// CloudStack can return a generic error (e.g. errorcode 530, "Failed to
+		// destroy vm with specified vmId") when this destroy call raced with a
+		// concurrent or previous one for the same VM (one wins, the other gets
+		// a generic conflict error back). Rather than trust the error message,
+		// re-check the VM's actual state: if it is now gone, or already
+		// destroyed/expunging, some destroy request already succeeded and this
+		// call is redundant, so treat it as success. Otherwise, surface the
+		// original error.
+		if gone, checkErr := c.isInstanceGoneOrDestroying(ctx, vm.Id); checkErr == nil && gone {
+			slog.Debug("DestroyInstance: destroy call failed but instance is already gone or being destroyed; treating as success",
+				"instance", identifier, "vm_id", vm.Id, "destroy_error", err)
+			return nil
+		}
 		return fmt.Errorf("failed to destroy instance: %w", err)
 	}
 	return nil
+}
+
+// isInstanceGoneOrDestroying reports whether a VM (identified by CloudStack ID) no
+// longer exists, or is already in a terminal "destroyed"/"expunging" state. It is
+// used to disambiguate a failed destroy call from a genuine failure: CloudStack
+// returns a generic error for a VM that is already being (or has already been)
+// destroyed by a concurrent or prior request.
+func (c *CloudStackCli) isInstanceGoneOrDestroying(ctx context.Context, vmID string) (bool, error) {
+	vm, err := c.FindOneInstance(ctx, "", vmID)
+	if err != nil {
+		if errors.Is(err, garmErrors.ErrNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	state := strings.ToLower(vm.State)
+	return state == "destroyed" || state == "expunging", nil
 }
 
 // ResolveServiceOffering resolves a service offering name or UUID to a UUID.
