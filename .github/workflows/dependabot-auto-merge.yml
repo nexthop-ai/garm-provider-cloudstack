@@ -1,38 +1,56 @@
-name: Auto-merge dependency updates
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+name: Dependabot auto-merge
+on: pull_request
 
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 jobs:
-  auto-merge:
+  dependabot:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]' || startsWith(github.head_ref, 'update-go-')
+    if: github.actor == 'dependabot[bot]'
     steps:
       - name: Dependabot metadata
         id: metadata
-        if: github.actor == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Approve Go version update PR
-        if: startsWith(github.head_ref, 'update-go-')
-        run: gh pr review --approve "$PR_URL"
+      - name: Wait for CI to pass
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-major' && steps.metadata.outputs.package-ecosystem == 'github_actions')
+        run: |
+          SHA="${{ github.event.pull_request.head.sha }}"
+          for i in $(seq 1 60); do
+            RESULT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs" \
+              --jq '[.check_runs[] | select(.name != "'"$GITHUB_JOB"'")] |
+                    if length == 0 then "pending"
+                    elif map(select(.status != "completed")) | length > 0 then "pending"
+                    elif map(select(.conclusion | IN("success", "skipped", "neutral") | not)) | length > 0 then "failure"
+                    else "success"
+                    end')
+            echo "Checks status: $RESULT (attempt $i/60)"
+            case "$RESULT" in
+              success) echo "All checks passed"; exit 0 ;;
+              pending) sleep 20 ;;
+              *) echo "A check failed: $RESULT"; exit 1 ;;
+            esac
+          done
+          echo "Timed out waiting for checks"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge Dependabot PRs
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-major' && steps.metadata.outputs.package-ecosystem == 'github_actions')
+        run: gh pr merge --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Enable auto-merge
-        if: |
-          startsWith(github.head_ref, 'update-go-') ||
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
