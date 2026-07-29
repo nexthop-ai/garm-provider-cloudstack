@@ -10,7 +10,7 @@ on:
 
 jobs:
   go-tests:
-    runs-on: k8s-staging-nano
+    runs-on: k8s-staging-nano-test
 
     steps:
       - name: Checkout
