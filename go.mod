@@ -6,7 +6,7 @@ toolchain go1.25.5
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/apache/cloudstack-go/v2 v2.19.0
+	github.com/apache/cloudstack-go/v2 v2.19.1
 	github.com/cloudbase/garm-provider-common v0.1.9
 	github.com/invopop/jsonschema v0.14.0
 	github.com/stretchr/testify v1.11.1
