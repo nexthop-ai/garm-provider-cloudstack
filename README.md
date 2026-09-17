@@ -108,6 +108,26 @@ disable_jit_config = false
   # environment_variables = ["CLOUDSTACK_"]
 ```
 
+## Troubleshooting
+
+The provider keeps its runtime state (observed job durations and the
+resolved-UUID cache) in a SQLite database, by default
+`/var/lib/garm/garm-provider-cloudstack.db`. The binary can dump either
+table, which is handy from inside the GARM pod:
+
+```bash
+garm-provider-cloudstack -dump job_samples
+garm-provider-cloudstack -dump name_cache
+```
+
+Pass `-config /path/to/cloudstack.toml` to honour a custom `state_dir`, or
+`-state-db /path/to/file.db` to point at the database directly. The
+`job_samples` dump shows what the adaptive poll schedule is learning from;
+`name_cache` shows which UUIDs deploys are currently using and how old each
+entry is. Deleting a row (or the whole file) is safe: entries are
+re-resolved on the next use and the poll schedule falls back to built-in
+estimates.
+
 ## Creating a pool
 
 After you [add it to garm as an external provider](https://github.com/cloudbase/garm/blob/main/doc/providers.md#the-external-provider), you need to create a pool that uses it. Assuming you named your external provider `cloudstack` in the garm config, the following command will create a new pool:

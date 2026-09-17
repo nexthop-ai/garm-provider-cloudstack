@@ -25,12 +25,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // sqlite3 driver
+	"github.com/mattn/go-sqlite3"
 )
 
 // schemaVersion is bumped whenever the schema changes; migrations are
@@ -57,11 +59,31 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
+	// Many provider processes may open a brand-new database at once (a burst
+	// of creates right after a rollout). Until the first of them has set WAL
+	// mode and created the schema, the others can get SQLITE_BUSY/LOCKED
+	// straight away instead of waiting on the busy timeout, so retry the
+	// migration briefly.
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = s.migrate(context.Background()); err == nil || !isBusy(err) {
+			break
+		}
+		time.Sleep(time.Duration(50+rand.IntN(100)) * time.Millisecond)
+	}
+	if err != nil {
 		db.Close() //nolint:errcheck // the migration error is the one worth reporting
 		return nil, err
 	}
 	return s, nil
+}
+
+// isBusy reports whether err is SQLite's "database is locked/busy".
+func isBusy(err error) bool {
+	var sqliteErr sqlite3.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
+	}
+	return false
 }
 
 // Close releases the database handle.
@@ -217,6 +239,68 @@ func (s *Store) Samples(ctx context.Context, op, key string, limit int) ([]time.
 			return nil, fmt.Errorf("scanning sample: %w", err)
 		}
 		out = append(out, time.Duration(ms)*time.Millisecond)
+	}
+	return out, rows.Err()
+}
+
+// JobSample is one row of job_samples.
+type JobSample struct {
+	Op         string
+	Key        string
+	Duration   time.Duration
+	RecordedAt time.Time
+}
+
+// NameCacheEntry is one row of name_cache.
+type NameCacheEntry struct {
+	Kind       string
+	Scope      string
+	Name       string
+	ID         string
+	ResolvedAt time.Time
+}
+
+// DumpJobSamples returns every job_samples row, newest first.
+func (s *Store) DumpJobSamples(ctx context.Context) ([]JobSample, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT op, key, duration_ms, recorded_at FROM job_samples ORDER BY id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("querying job_samples: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only cursor
+	var out []JobSample
+	for rows.Next() {
+		var (
+			r      JobSample
+			ms, at int64
+		)
+		if err := rows.Scan(&r.Op, &r.Key, &ms, &at); err != nil {
+			return nil, fmt.Errorf("scanning job_samples: %w", err)
+		}
+		r.Duration = time.Duration(ms) * time.Millisecond
+		r.RecordedAt = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DumpNameCache returns every name_cache row, ordered by kind, scope, name.
+func (s *Store) DumpNameCache(ctx context.Context) ([]NameCacheEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, scope, name, id, resolved_at FROM name_cache ORDER BY kind, scope, name`)
+	if err != nil {
+		return nil, fmt.Errorf("querying name_cache: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only cursor
+	var out []NameCacheEntry
+	for rows.Next() {
+		var (
+			r  NameCacheEntry
+			at int64
+		)
+		if err := rows.Scan(&r.Kind, &r.Scope, &r.Name, &r.ID, &at); err != nil {
+			return nil, fmt.Errorf("scanning name_cache: %w", err)
+		}
+		r.ResolvedAt = time.Unix(at, 0)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

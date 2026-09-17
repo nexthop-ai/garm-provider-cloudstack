@@ -183,6 +183,17 @@ func (c *Config) GetAsyncTimeout() int64 {
 	return int64(c.AsyncTimeout.Seconds())
 }
 
+// Load decodes a config file without validating it. Tooling that only needs
+// a setting or two (e.g. state_dir) uses it; the provider itself uses
+// NewConfig.
+func Load(path string) (*Config, error) {
+	var cfg Config
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return nil, fmt.Errorf("error decoding config: %w", err)
+	}
+	return &cfg, nil
+}
+
 // NewConfig loads and validates the provider configuration from a TOML file.
 // It also resolves symbolic names to UUIDs.
 func NewConfig(path string) (*Config, error) {
