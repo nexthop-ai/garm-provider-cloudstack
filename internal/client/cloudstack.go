@@ -131,12 +131,16 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 	if strings.TrimSpace(identifier) == "" {
 		return nil, fmt.Errorf("empty identifier")
 	}
+	projectID, err := c.cfg.ProjectID()
+	if err != nil {
+		return nil, err
+	}
 	if cs.IsID(identifier) {
 		p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 		p.SetId(identifier)
 		p.SetListall(true)
-		if c.cfg.ProjectID() != "" {
-			p.SetProjectid(c.cfg.ProjectID())
+		if projectID != "" {
+			p.SetProjectid(projectID)
 		}
 		resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
 		if err != nil {
@@ -155,8 +159,8 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 	p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 	p.SetName(identifier)
 	p.SetListall(true)
-	if c.cfg.ProjectID() != "" {
-		p.SetProjectid(c.cfg.ProjectID())
+	if projectID != "" {
+		p.SetProjectid(projectID)
 	}
 	// Only filter by controller tag if it's provided
 	if controllerID != "" {
@@ -181,10 +185,14 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 
 // ListInstancesByPool lists all non-destroyed instances for a given pool.
 func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, poolID string) ([]*cs.VirtualMachine, error) {
+	projectID, err := c.cfg.ProjectID()
+	if err != nil {
+		return nil, err
+	}
 	slog.Debug("ListInstancesByPool: querying CloudStack",
 		"controller_id", controllerID,
 		"pool_id", poolID,
-		"project_id", c.cfg.ProjectID())
+		"project_id", projectID)
 
 	p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 	p.SetListall(true)
@@ -196,8 +204,8 @@ func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, p
 		"GARM_CONTROLLER_ID": controllerID,
 	}
 	p.SetTags(tags)
-	if c.cfg.ProjectID() != "" {
-		p.SetProjectid(c.cfg.ProjectID())
+	if projectID != "" {
+		p.SetProjectid(projectID)
 	}
 
 	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)

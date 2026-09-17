@@ -17,6 +17,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -137,8 +138,32 @@ func TestNewConfig(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	// Note: We can't easily test a successful NewConfig without a real CloudStack
-	// API since ResolveNames() makes API calls to resolve names to UUIDs.
+	// Loading a config must not contact CloudStack: names are resolved lazily,
+	// on first use, so the API URL here is deliberately unreachable.
+	t.Run("valid config resolves nothing eagerly", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cloudstack.toml")
+		require.NoError(t, os.WriteFile(path, []byte(`
+api_url = "http://127.0.0.1:1/client/api"
+api_key = "key"
+secret = "secret"
+zone = "us-west-1"
+service_offering = "g1.small"
+template = "runner-template"
+project = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+`), 0o600))
+
+		cfg, err := NewConfig(path)
+		require.NoError(t, err)
+
+		// A UUID is returned as-is without a lookup.
+		projectID, err := cfg.ProjectID()
+		require.NoError(t, err)
+		require.Equal(t, "3fa85f64-5717-4562-b3fc-2c963f66afa6", projectID)
+
+		// A name needs a lookup, which fails against the unreachable API.
+		_, err = cfg.ZoneID()
+		require.Error(t, err)
+	})
 }
 
 func TestIsUUID(t *testing.T) {

@@ -119,6 +119,40 @@ func TestGetRunnerSpecFromBootstrapParams(t *testing.T) {
 	}, spec)
 }
 
+// TestGetRunnerSpecOverridesSkipResolution asserts that config-level names
+// are not resolved (no CloudStack API call) when the pool overrides them via
+// flavor/image and extra_specs. The config points at an unreachable API and
+// has no pre-resolved IDs, so any lookup would fail.
+func TestGetRunnerSpecOverridesSkipResolution(t *testing.T) {
+	DefaultToolFetch = func(osType params.OSType, osArch params.OSArch, tools []params.RunnerApplicationDownload) (params.RunnerApplicationDownload, error) {
+		return params.RunnerApplicationDownload{}, nil
+	}
+
+	cfg := &config.Config{
+		APIURL:          "http://127.0.0.1:1/client/api",
+		APIKey:          "api-key",
+		Secret:          "secret",
+		Zone:            "zone-name",
+		ServiceOffering: "offering-name",
+		Template:        "template-name",
+	}
+	data := params.BootstrapInstance{
+		Name:       "runner-name",
+		OSType:     params.Linux,
+		OSArch:     params.Amd64,
+		Flavor:     "g1.2c8g30d",
+		Image:      "nh-gha-runner-ubuntu-2404",
+		ExtraSpecs: json.RawMessage(`{"zone_id": "zone-override"}`),
+	}
+
+	spec, err := GetRunnerSpecFromBootstrapParams(cfg, data, "controller-id")
+	require.NoError(t, err)
+	require.Equal(t, "zone-override", spec.ZoneID)
+	require.Empty(t, spec.ServiceOfferingID, "config offering must not be resolved when flavor is set")
+	require.Empty(t, spec.TemplateID, "config template must not be resolved when image is set")
+	require.Empty(t, spec.ProjectID)
+}
+
 func TestRunnerSpecValidate(t *testing.T) {
 	tests := []struct {
 		name      string

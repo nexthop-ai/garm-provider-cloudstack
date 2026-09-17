@@ -139,16 +139,38 @@ func GetRunnerSpecFromBootstrapParams(cfg *config.Config, data params.BootstrapI
 		return nil, fmt.Errorf("error loading extra specs: %w", err)
 	}
 
+	projectID, err := cfg.ProjectID()
+	if err != nil {
+		return nil, err
+	}
 	spec := &RunnerSpec{
-		ZoneID:            cfg.ZoneID(),
-		ServiceOfferingID: cfg.ServiceOfferingID(),
-		TemplateID:        cfg.TemplateID(),
-		SSHKeyName:        cfg.SSHKeyName,
-		ProjectID:         cfg.ProjectID(),
-		ExtraPackages:     extraSpecs.ExtraPackages,
-		Tools:             tools,
-		BootstrapParams:   data,
-		ControllerID:      controllerID,
+		SSHKeyName:      cfg.SSHKeyName,
+		ProjectID:       projectID,
+		ExtraPackages:   extraSpecs.ExtraPackages,
+		Tools:           tools,
+		BootstrapParams: data,
+		ControllerID:    controllerID,
+	}
+
+	// Only resolve the config-level defaults that are not overridden. Each
+	// resolution is a CloudStack API call (the provider runs as a fresh
+	// process per operation, so nothing is cached across calls), and a pool's
+	// flavor/image or an extra_specs UUID replaces the corresponding default
+	// anyway.
+	if extraSpecs == nil || extraSpecs.ZoneID == nil || *extraSpecs.ZoneID == "" {
+		if spec.ZoneID, err = cfg.ZoneID(); err != nil {
+			return nil, err
+		}
+	}
+	if data.Flavor == "" && (extraSpecs == nil || extraSpecs.ServiceOfferingID == nil || *extraSpecs.ServiceOfferingID == "") {
+		if spec.ServiceOfferingID, err = cfg.ServiceOfferingID(); err != nil {
+			return nil, err
+		}
+	}
+	if data.Image == "" && (extraSpecs == nil || extraSpecs.TemplateID == nil || *extraSpecs.TemplateID == "") {
+		if spec.TemplateID, err = cfg.TemplateID(); err != nil {
+			return nil, err
+		}
 	}
 
 	spec.MergeExtraSpecs(extraSpecs)
@@ -197,10 +219,13 @@ func (r *RunnerSpec) Validate() error {
 	if r.ZoneID == "" {
 		return fmt.Errorf("missing zone_id")
 	}
-	if r.ServiceOfferingID == "" {
+	// A pool's flavor/image are resolved at deploy time and take precedence
+	// over the config-level IDs, so only require the ID when no override
+	// exists.
+	if r.ServiceOfferingID == "" && r.BootstrapParams.Flavor == "" {
 		return fmt.Errorf("missing service_offering_id")
 	}
-	if r.TemplateID == "" {
+	if r.TemplateID == "" && r.BootstrapParams.Image == "" {
 		return fmt.Errorf("missing template_id")
 	}
 	if r.BootstrapParams.Name == "" {

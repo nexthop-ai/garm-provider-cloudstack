@@ -94,8 +94,10 @@ type Config struct {
 	// Default: false (VMs remain in "Destroyed" state and can be recovered).
 	Expunge bool `toml:"expunge"`
 
-	// resolved holds the resolved UUIDs after calling ResolveNames()
+	// resolved caches UUIDs looked up on demand; see ZoneID() and friends.
 	resolved resolvedIDs
+	// client is created lazily, the first time a name has to be resolved.
+	client *cs.CloudStackClient
 }
 
 // DefaultAsyncTimeout is the default timeout for async CloudStack API calls (15 minutes).
@@ -109,42 +111,139 @@ func (c *Config) GetAsyncTimeout() int64 {
 	return int64(c.AsyncTimeout.Seconds())
 }
 
-// resolvedIDs holds the resolved UUIDs for each resource.
+// resolvedIDs caches the UUIDs each resource name resolves to. Zero values
+// mean "not resolved yet".
 type resolvedIDs struct {
 	ZoneID            string
 	ServiceOfferingID string
 	TemplateID        string
 	ProjectID         string
+	projectResolved   bool
 }
 
-// ZoneID returns the resolved zone UUID.
-func (c *Config) ZoneID() string {
-	return c.resolved.ZoneID
+// ZoneID returns the zone UUID, resolving the configured name on first use.
+func (c *Config) ZoneID() (string, error) {
+	if c.resolved.ZoneID != "" {
+		return c.resolved.ZoneID, nil
+	}
+	if isUUID(c.Zone) {
+		c.resolved.ZoneID = c.Zone
+		return c.Zone, nil
+	}
+	zone, _, err := c.cs().Zone.GetZoneByName(c.Zone)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve zone %q: %w", c.Zone, err)
+	}
+	c.resolved.ZoneID = zone.Id
+	return zone.Id, nil
 }
 
-// ServiceOfferingID returns the resolved service offering UUID.
-func (c *Config) ServiceOfferingID() string {
-	return c.resolved.ServiceOfferingID
+// ServiceOfferingID returns the compute offering UUID, resolving the
+// configured name on first use.
+func (c *Config) ServiceOfferingID() (string, error) {
+	if c.resolved.ServiceOfferingID != "" {
+		return c.resolved.ServiceOfferingID, nil
+	}
+	if isUUID(c.ServiceOffering) {
+		c.resolved.ServiceOfferingID = c.ServiceOffering
+		return c.ServiceOffering, nil
+	}
+	so, _, err := c.cs().ServiceOffering.GetServiceOfferingByName(c.ServiceOffering)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve service_offering %q: %w", c.ServiceOffering, err)
+	}
+	c.resolved.ServiceOfferingID = so.Id
+	return so.Id, nil
 }
 
-// TemplateID returns the resolved template UUID.
-func (c *Config) TemplateID() string {
-	return c.resolved.TemplateID
+// TemplateID returns the template UUID, resolving the configured name on
+// first use. The lookup is scoped to the configured zone and project.
+func (c *Config) TemplateID() (string, error) {
+	if c.resolved.TemplateID != "" {
+		return c.resolved.TemplateID, nil
+	}
+	if isUUID(c.Template) {
+		c.resolved.TemplateID = c.Template
+		return c.Template, nil
+	}
+	zoneID, err := c.ZoneID()
+	if err != nil {
+		return "", err
+	}
+	projectID, err := c.ProjectID()
+	if err != nil {
+		return "", err
+	}
+	p := c.cs().Template.NewListTemplatesParams("executable")
+	p.SetName(c.Template)
+	p.SetZoneid(zoneID)
+	if projectID != "" {
+		p.SetProjectid(projectID)
+	}
+	resp, err := c.cs().Template.ListTemplates(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve template %q: %w", c.Template, err)
+	}
+	if resp.Count == 0 {
+		return "", fmt.Errorf("template %q not found", c.Template)
+	}
+	// If multiple templates match, use the first one
+	c.resolved.TemplateID = resp.Templates[0].Id
+	return c.resolved.TemplateID, nil
 }
 
-// ProjectID returns the resolved project UUID (may be empty if not set).
-func (c *Config) ProjectID() string {
-	return c.resolved.ProjectID
+// ProjectID returns the project UUID, resolving the configured name on
+// first use. It is empty when no project is configured.
+func (c *Config) ProjectID() (string, error) {
+	if c.resolved.projectResolved {
+		return c.resolved.ProjectID, nil
+	}
+	if c.Project == "" {
+		c.resolved.projectResolved = true
+		return "", nil
+	}
+	if isUUID(c.Project) {
+		c.resolved.ProjectID = c.Project
+		c.resolved.projectResolved = true
+		return c.Project, nil
+	}
+	p := c.cs().Project.NewListProjectsParams()
+	p.SetName(c.Project)
+	p.SetListall(true)
+	resp, err := c.cs().Project.ListProjects(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve project %q: %w", c.Project, err)
+	}
+	if resp.Count == 0 {
+		return "", fmt.Errorf("project %q not found", c.Project)
+	}
+	if resp.Count > 1 {
+		return "", fmt.Errorf("multiple projects found matching %q", c.Project)
+	}
+	c.resolved.ProjectID = resp.Projects[0].Id
+	c.resolved.projectResolved = true
+	return c.resolved.ProjectID, nil
 }
 
-// SetResolvedIDs sets the resolved UUIDs directly (for testing purposes).
+// SetResolvedIDs pre-populates the UUID cache so no lookups are performed
+// (for testing purposes).
 func (c *Config) SetResolvedIDs(zoneID, serviceOfferingID, templateID, projectID string) {
 	c.resolved = resolvedIDs{
 		ZoneID:            zoneID,
 		ServiceOfferingID: serviceOfferingID,
 		TemplateID:        templateID,
 		ProjectID:         projectID,
+		projectResolved:   true,
 	}
+}
+
+// cs returns the CloudStack client used for name resolution, creating it on
+// first use.
+func (c *Config) cs() *cs.CloudStackClient {
+	if c.client == nil {
+		c.client = cs.NewClient(c.APIURL, c.APIKey, c.Secret, c.VerifySSL)
+	}
+	return c.client
 }
 
 // NewConfig loads and validates the provider configuration from a TOML file.
@@ -156,9 +255,6 @@ func NewConfig(path string) (*Config, error) {
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("error validating config: %w", err)
-	}
-	if err := cfg.resolveNames(); err != nil {
-		return nil, fmt.Errorf("error resolving names: %w", err)
 	}
 	return &cfg, nil
 }
@@ -183,79 +279,6 @@ func (c *Config) Validate() error {
 	if c.Template == "" {
 		return fmt.Errorf("missing template")
 	}
-	return nil
-}
-
-// resolveNames resolves symbolic names to UUIDs using the CloudStack API.
-// If the value is already a UUID, it's used directly; otherwise, the name is resolved.
-func (c *Config) resolveNames() error {
-	client := cs.NewAsyncClient(c.APIURL, c.APIKey, c.Secret, c.VerifySSL)
-
-	// Resolve zone
-	if isUUID(c.Zone) {
-		c.resolved.ZoneID = c.Zone
-	} else {
-		zone, _, err := client.Zone.GetZoneByName(c.Zone)
-		if err != nil {
-			return fmt.Errorf("failed to resolve zone %q: %w", c.Zone, err)
-		}
-		c.resolved.ZoneID = zone.Id
-	}
-
-	// Resolve service offering
-	if isUUID(c.ServiceOffering) {
-		c.resolved.ServiceOfferingID = c.ServiceOffering
-	} else {
-		so, _, err := client.ServiceOffering.GetServiceOfferingByName(c.ServiceOffering)
-		if err != nil {
-			return fmt.Errorf("failed to resolve service_offering %q: %w", c.ServiceOffering, err)
-		}
-		c.resolved.ServiceOfferingID = so.Id
-	}
-
-	// Resolve project (needed before resolving template if using project-scoped templates)
-	if c.Project != "" {
-		if isUUID(c.Project) {
-			c.resolved.ProjectID = c.Project
-		} else {
-			p := client.Project.NewListProjectsParams()
-			p.SetName(c.Project)
-			p.SetListall(true)
-			resp, err := client.Project.ListProjects(p)
-			if err != nil {
-				return fmt.Errorf("failed to resolve project %q: %w", c.Project, err)
-			}
-			if resp.Count == 0 {
-				return fmt.Errorf("project %q not found", c.Project)
-			}
-			if resp.Count > 1 {
-				return fmt.Errorf("multiple projects found matching %q", c.Project)
-			}
-			c.resolved.ProjectID = resp.Projects[0].Id
-		}
-	}
-
-	// Resolve template
-	if isUUID(c.Template) {
-		c.resolved.TemplateID = c.Template
-	} else {
-		p := client.Template.NewListTemplatesParams("executable")
-		p.SetName(c.Template)
-		p.SetZoneid(c.resolved.ZoneID)
-		if c.resolved.ProjectID != "" {
-			p.SetProjectid(c.resolved.ProjectID)
-		}
-		resp, err := client.Template.ListTemplates(p)
-		if err != nil {
-			return fmt.Errorf("failed to resolve template %q: %w", c.Template, err)
-		}
-		if resp.Count == 0 {
-			return fmt.Errorf("template %q not found", c.Template)
-		}
-		// If multiple templates match, use the first one
-		c.resolved.TemplateID = resp.Templates[0].Id
-	}
-
 	return nil
 }
 
