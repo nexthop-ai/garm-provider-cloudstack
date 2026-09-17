@@ -9,6 +9,7 @@ require (
 	github.com/apache/cloudstack-go/v2 v2.19.1
 	github.com/cloudbase/garm-provider-common v0.1.9
 	github.com/invopop/jsonschema v0.14.0
+	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/stretchr/testify v1.12.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 )
