@@ -231,10 +231,10 @@ func (r *RunnerSpec) generateNFSMountScript() []byte {
 				options = "nfsvers=4,ro,soft,timeo=30"
 			}
 		}
-		script.WriteString(fmt.Sprintf("# Mount %s:%s\n", mount.Server, mount.ServerPath))
-		script.WriteString(fmt.Sprintf("mkdir -p %s\n", mount.MountPath))
-		script.WriteString(fmt.Sprintf("mount -t nfs -o %s %s:%s %s\n", options, mount.Server, mount.ServerPath, mount.MountPath))
-		script.WriteString(fmt.Sprintf("echo 'Mounted %s:%s to %s'\n\n", mount.Server, mount.ServerPath, mount.MountPath))
+		fmt.Fprintf(&script, "# Mount %s:%s\n", mount.Server, mount.ServerPath)
+		fmt.Fprintf(&script, "mkdir -p %s\n", mount.MountPath)
+		fmt.Fprintf(&script, "mount -t nfs -o %s %s:%s %s\n", options, mount.Server, mount.ServerPath, mount.MountPath)
+		fmt.Fprintf(&script, "echo 'Mounted %s:%s to %s'\n\n", mount.Server, mount.ServerPath, mount.MountPath)
 	}
 
 	return []byte(script.String())

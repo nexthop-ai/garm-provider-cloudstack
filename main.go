@@ -53,6 +53,9 @@ func main() {
 		os.Exit(1)
 	}
 	if len(result) > 0 {
-		fmt.Fprint(os.Stdout, result)
+		if _, err := fmt.Fprint(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write result: %+v\n", err)
+			os.Exit(1)
+		}
 	}
 }

@@ -106,7 +106,7 @@ func (c *Config) GetAsyncTimeout() int64 {
 	if c.AsyncTimeout.Duration <= 0 {
 		return int64(DefaultAsyncTimeout.Seconds())
 	}
-	return int64(c.AsyncTimeout.Duration.Seconds())
+	return int64(c.AsyncTimeout.Seconds())
 }
 
 // resolvedIDs holds the resolved UUIDs for each resource.

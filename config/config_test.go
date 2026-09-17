@@ -126,9 +126,8 @@ func TestNewConfig(t *testing.T) {
 	})
 
 	t.Run("invalid toml", func(t *testing.T) {
-		badFile, err := os.CreateTemp("", "cloudstack-config-bad-*.toml")
+		badFile, err := os.CreateTemp(t.TempDir(), "cloudstack-config-bad-*.toml")
 		require.NoError(t, err)
-		defer os.Remove(badFile.Name())
 
 		_, err = badFile.Write([]byte("not = [valid"))
 		require.NoError(t, err)
