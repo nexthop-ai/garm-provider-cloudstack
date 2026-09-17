@@ -182,67 +182,32 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 		return "", fmt.Errorf("invalid nil runner spec")
 	}
 
-	// Resolve --flavor override from CLI if provided
-	serviceOfferingID := spec.ServiceOfferingID
-	if spec.BootstrapParams.Flavor != "" {
-		resolved, err := c.ResolveServiceOffering(spec.BootstrapParams.Flavor)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve flavor %q: %w", spec.BootstrapParams.Flavor, err)
-		}
-		serviceOfferingID = resolved
-	}
-
-	// Resolve --image override from CLI if provided
-	templateID := spec.TemplateID
-	if spec.BootstrapParams.Image != "" {
-		resolved, err := c.ResolveTemplate(spec.BootstrapParams.Image, spec.ZoneID, spec.ProjectID)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve image %q: %w", spec.BootstrapParams.Image, err)
-		}
-		templateID = resolved
-	}
-
 	udata, err := spec.ComposeUserData()
 	if err != nil {
 		return "", fmt.Errorf("failed to compose user data: %w", err)
 	}
 
-	// Resolve network names to IDs (accepts both names and UUIDs)
-	networkIDs, err := c.ResolveNetworks(spec.NetworkIDs, spec.ZoneID, spec.ProjectID)
+	ids, err := c.resolveDeployIDs(ctx, spec)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve networks: %w", err)
+		return "", err
 	}
-
-	params := c.client.VirtualMachine.NewDeployVirtualMachineParams(
-		serviceOfferingID,
-		templateID,
-		spec.ZoneID,
-	)
-	params.SetName(spec.BootstrapParams.Name)
-	params.SetDisplayname(spec.BootstrapParams.Name)
-	params.SetUserdata(udata)
-	if len(networkIDs) > 0 {
-		params.SetNetworkids(networkIDs)
-	}
-	if spec.SSHKeyName != "" {
-		params.SetKeypair(spec.SSHKeyName)
-	}
-	if spec.ProjectID != "" {
-		params.SetProjectid(spec.ProjectID)
-	}
-
-	// Submit through the sync client and wait ourselves: the immediate
-	// response carries the job ID (and the VM ID), completion is polled with
-	// a schedule learned from earlier deploys of the same offering/template.
-	resp, err := c.syncClient.VirtualMachine.DeployVirtualMachine(params)
+	resp, err := c.deploy(ctx, spec, ids, udata)
 	if err != nil {
-		return "", fmt.Errorf("failed to deploy virtual machine: %w", err)
-	}
-	if resp.JobID == "" {
-		return "", fmt.Errorf("empty job id in deploy response")
-	}
-	if _, err := c.waitForJob(ctx, opDeploy, serviceOfferingID+"/"+templateID, resp.JobID); err != nil {
-		return "", fmt.Errorf("failed to deploy virtual machine: %w", err)
+		// CloudStack rejects a deploy that references a deleted entity
+		// synchronously, before any VM is created (see invalidateStale). A
+		// UUID we served from the cache may have been deleted since,
+		// typically a template replaced under the same name. Drop the stale
+		// entries, resolve again and retry once.
+		if !c.invalidateStale(ctx, err, ids.all()...) {
+			return "", err
+		}
+		slog.Info("retrying deploy with freshly resolved UUIDs", "instance_name", spec.BootstrapParams.Name)
+		if ids, err = c.resolveDeployIDs(ctx, spec); err != nil {
+			return "", err
+		}
+		if resp, err = c.deploy(ctx, spec, ids, udata); err != nil {
+			return "", err
+		}
 	}
 	if resp.Id == "" {
 		return "", fmt.Errorf("empty VM id in deploy response")
@@ -263,15 +228,53 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 	return resp.Id, nil
 }
 
+// deploy submits deployVirtualMachine and waits for the job. It is submitted
+// through the sync client: the immediate response carries the job ID (and
+// the VM ID) and completion is polled with a schedule learned from earlier
+// deploys of the same offering/template.
+func (c *CloudStackCli) deploy(ctx context.Context, spec *spec.RunnerSpec, ids deployIDs, udata string) (*cs.DeployVirtualMachineResponse, error) {
+	params := c.syncClient.VirtualMachine.NewDeployVirtualMachineParams(ids.offering, ids.template, ids.zone)
+	params.SetName(spec.BootstrapParams.Name)
+	params.SetDisplayname(spec.BootstrapParams.Name)
+	params.SetUserdata(udata)
+	if len(ids.networks) > 0 {
+		params.SetNetworkids(ids.networks)
+	}
+	if spec.SSHKeyName != "" {
+		params.SetKeypair(spec.SSHKeyName)
+	}
+	if ids.project != "" {
+		params.SetProjectid(ids.project)
+	}
+
+	resp, err := c.syncClient.VirtualMachine.DeployVirtualMachine(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deploy virtual machine: %w", err)
+	}
+	if resp.JobID == "" {
+		return nil, fmt.Errorf("empty job id in deploy response")
+	}
+	if _, err := c.waitForJob(ctx, opDeploy, ids.offering+"/"+ids.template, resp.JobID); err != nil {
+		return nil, fmt.Errorf("failed to deploy virtual machine: %w", err)
+	}
+	return resp, nil
+}
+
 // FindOneInstance returns a single VM either by ID (preferred) or by name+controller tag.
 func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, identifier string) (*cs.VirtualMachine, error) {
 	if strings.TrimSpace(identifier) == "" {
 		return nil, fmt.Errorf("empty identifier")
 	}
-	projectID, err := c.cfg.ProjectID()
-	if err != nil {
-		return nil, err
-	}
+	var vm *cs.VirtualMachine
+	err := c.withProjectRetry(ctx, func(projectID string) error {
+		var err error
+		vm, err = c.findOneInstance(controllerID, identifier, projectID)
+		return err
+	})
+	return vm, err
+}
+
+func (c *CloudStackCli) findOneInstance(controllerID, identifier, projectID string) (*cs.VirtualMachine, error) {
 	if cs.IsID(identifier) {
 		p := c.client.VirtualMachine.NewListVirtualMachinesParams()
 		p.SetId(identifier)
@@ -322,30 +325,31 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 
 // ListInstancesByPool lists all non-destroyed instances for a given pool.
 func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, poolID string) ([]*cs.VirtualMachine, error) {
-	projectID, err := c.cfg.ProjectID()
-	if err != nil {
-		return nil, err
-	}
-	slog.Debug("ListInstancesByPool: querying CloudStack",
-		"controller_id", controllerID,
-		"pool_id", poolID,
-		"project_id", projectID)
+	var resp *cs.ListVirtualMachinesResponse
+	err := c.withProjectRetry(ctx, func(projectID string) error {
+		slog.Debug("ListInstancesByPool: querying CloudStack",
+			"controller_id", controllerID,
+			"pool_id", poolID,
+			"project_id", projectID)
 
-	p := c.client.VirtualMachine.NewListVirtualMachinesParams()
-	p.SetListall(true)
-	// IMPORTANT: Only filter by GARM_CONTROLLER_ID here. CloudStack's tag filtering
-	// uses a logical OR when multiple tags are specified (not AND as one might expect).
-	// This undocumented behavior was confirmed by reading the CloudStack source code.
-	// We must filter by GARM_POOL_ID on the client side after receiving the results.
-	tags := map[string]string{
-		"GARM_CONTROLLER_ID": controllerID,
-	}
-	p.SetTags(tags)
-	if projectID != "" {
-		p.SetProjectid(projectID)
-	}
+		p := c.client.VirtualMachine.NewListVirtualMachinesParams()
+		p.SetListall(true)
+		// IMPORTANT: Only filter by GARM_CONTROLLER_ID here. CloudStack's tag filtering
+		// uses a logical OR when multiple tags are specified (not AND as one might expect).
+		// This undocumented behavior was confirmed by reading the CloudStack source code.
+		// We must filter by GARM_POOL_ID on the client side after receiving the results.
+		tags := map[string]string{
+			"GARM_CONTROLLER_ID": controllerID,
+		}
+		p.SetTags(tags)
+		if projectID != "" {
+			p.SetProjectid(projectID)
+		}
 
-	resp, err := c.client.VirtualMachine.ListVirtualMachines(p)
+		var err error
+		resp, err = c.client.VirtualMachine.ListVirtualMachines(p)
+		return err
+	})
 	if err != nil {
 		slog.Error("ListInstancesByPool: CloudStack API error",
 			"controller_id", controllerID,
@@ -502,152 +506,4 @@ func (c *CloudStackCli) isInstanceGoneOrDestroying(ctx context.Context, vmID str
 	}
 	state := strings.ToLower(vm.State)
 	return state == "destroyed" || state == "expunging", nil
-}
-
-// ResolveServiceOffering resolves a service offering name or UUID to a UUID.
-// If the input is already a UUID, it's returned as-is.
-func (c *CloudStackCli) ResolveServiceOffering(nameOrID string) (string, error) {
-	if nameOrID == "" {
-		return "", fmt.Errorf("empty service offering")
-	}
-	if cs.IsID(nameOrID) {
-		return nameOrID, nil
-	}
-	so, _, err := c.client.ServiceOffering.GetServiceOfferingByName(nameOrID)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve service_offering %q: %w", nameOrID, err)
-	}
-	return so.Id, nil
-}
-
-// ResolveTemplate resolves a template name or UUID to a UUID.
-// If the input is already a UUID, it's returned as-is.
-func (c *CloudStackCli) ResolveTemplate(nameOrID, zoneID, projectID string) (string, error) {
-	if nameOrID == "" {
-		return "", fmt.Errorf("empty template")
-	}
-	if cs.IsID(nameOrID) {
-		return nameOrID, nil
-	}
-	p := c.client.Template.NewListTemplatesParams("executable")
-	p.SetName(nameOrID)
-	if zoneID != "" {
-		p.SetZoneid(zoneID)
-	}
-	if projectID != "" {
-		p.SetProjectid(projectID)
-	}
-	resp, err := c.client.Template.ListTemplates(p)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve template %q: %w", nameOrID, err)
-	}
-	if resp.Count == 0 {
-		return "", fmt.Errorf("template %q not found", nameOrID)
-	}
-	return resp.Templates[0].Id, nil
-}
-
-// ResolveVPC resolves a VPC name or UUID to a UUID.
-// If the input is already a UUID, it's returned as-is.
-func (c *CloudStackCli) ResolveVPC(nameOrID, zoneID, projectID string) (string, error) {
-	if nameOrID == "" {
-		return "", fmt.Errorf("empty VPC")
-	}
-	if cs.IsID(nameOrID) {
-		return nameOrID, nil
-	}
-	p := c.client.VPC.NewListVPCsParams()
-	p.SetListall(true)
-	p.SetName(nameOrID)
-	if zoneID != "" {
-		p.SetZoneid(zoneID)
-	}
-	if projectID != "" {
-		p.SetProjectid(projectID)
-	}
-	resp, err := c.client.VPC.ListVPCs(p)
-	if err != nil {
-		return "", fmt.Errorf("failed to list VPCs: %w", err)
-	}
-	if resp.Count == 0 {
-		return "", fmt.Errorf("VPC %q not found", nameOrID)
-	}
-	// Find exact match (ListVPCs does substring matching)
-	for _, vpc := range resp.VPCs {
-		if vpc.Name == nameOrID {
-			return vpc.Id, nil
-		}
-	}
-	return "", fmt.Errorf("VPC %q not found", nameOrID)
-}
-
-// ResolveNetwork resolves a network name or UUID to a UUID.
-// If the input is already a UUID, it's returned as-is.
-// Supports "vpc-name/network-name" syntax for VPC-scoped networks.
-func (c *CloudStackCli) ResolveNetwork(nameOrID, zoneID, projectID string) (string, error) {
-	if nameOrID == "" {
-		return "", fmt.Errorf("empty network")
-	}
-	if cs.IsID(nameOrID) {
-		return nameOrID, nil
-	}
-
-	// Check for "vpc-name/network-name" syntax
-	var vpcID, networkName string
-	if idx := strings.Index(nameOrID, "/"); idx > 0 && idx < len(nameOrID)-1 {
-		vpcName := nameOrID[:idx]
-		networkName = nameOrID[idx+1:]
-		// Resolve VPC name to ID
-		var err error
-		vpcID, err = c.ResolveVPC(vpcName, zoneID, projectID)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve VPC in %q: %w", nameOrID, err)
-		}
-	} else {
-		networkName = nameOrID
-	}
-
-	p := c.client.Network.NewListNetworksParams()
-	p.SetListall(true)
-	p.SetCanusefordeploy(true)
-	if zoneID != "" {
-		p.SetZoneid(zoneID)
-	}
-	if projectID != "" {
-		p.SetProjectid(projectID)
-	}
-	if vpcID != "" {
-		p.SetVpcid(vpcID)
-	}
-	resp, err := c.client.Network.ListNetworks(p)
-	if err != nil {
-		return "", fmt.Errorf("failed to list networks: %w", err)
-	}
-	// Find the network by name (exact match)
-	for _, net := range resp.Networks {
-		if net.Name == networkName {
-			return net.Id, nil
-		}
-	}
-	if vpcID != "" {
-		return "", fmt.Errorf("network %q not found in VPC", nameOrID)
-	}
-	return "", fmt.Errorf("network %q not found", nameOrID)
-}
-
-// ResolveNetworks resolves a list of network names or UUIDs to UUIDs.
-// Supports "vpc-name/network-name" syntax for VPC-scoped networks.
-func (c *CloudStackCli) ResolveNetworks(namesOrIDs []string, zoneID, projectID string) ([]string, error) {
-	if len(namesOrIDs) == 0 {
-		return nil, nil
-	}
-	resolved := make([]string, 0, len(namesOrIDs))
-	for _, nameOrID := range namesOrIDs {
-		id, err := c.ResolveNetwork(nameOrID, zoneID, projectID)
-		if err != nil {
-			return nil, err
-		}
-		resolved = append(resolved, id)
-	}
-	return resolved, nil
 }

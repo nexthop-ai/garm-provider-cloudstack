@@ -35,7 +35,7 @@ import (
 
 // schemaVersion is bumped whenever the schema changes; migrations are
 // applied in order in Open.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Store is a handle on the provider state database.
 type Store struct {
@@ -101,7 +101,69 @@ INSERT INTO schema_version (version) VALUES (1);
 			return fmt.Errorf("applying schema v1: %w", err)
 		}
 	}
+	if version < 2 {
+		if _, err := tx.ExecContext(ctx, `
+CREATE TABLE name_cache (
+	kind        TEXT    NOT NULL,
+	scope       TEXT    NOT NULL,
+	name        TEXT    NOT NULL,
+	id          TEXT    NOT NULL,
+	resolved_at INTEGER NOT NULL,
+	PRIMARY KEY (kind, scope, name)
+);
+CREATE INDEX name_cache_id ON name_cache (id);
+INSERT INTO schema_version (version) VALUES (2);
+`); err != nil {
+			return fmt.Errorf("applying schema v2: %w", err)
+		}
+	}
 	return tx.Commit()
+}
+
+// GetID returns the cached UUID for a resource name, if it was resolved less
+// than ttl ago. kind is the resource type and scope the zone/project the
+// name is unique within (empty for global resources such as zones).
+func (s *Store) GetID(ctx context.Context, kind, scope, name string, ttl time.Duration) (string, bool, error) {
+	var (
+		id         string
+		resolvedAt int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, resolved_at FROM name_cache WHERE kind = ? AND scope = ? AND name = ?`,
+		kind, scope, name).Scan(&id, &resolvedAt)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("querying name cache: %w", err)
+	}
+	if time.Since(time.Unix(resolvedAt, 0)) > ttl {
+		return "", false, nil
+	}
+	return id, true, nil
+}
+
+// PutID caches the UUID a resource name resolved to.
+func (s *Store) PutID(ctx context.Context, kind, scope, name, id string) error {
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO name_cache (kind, scope, name, id, resolved_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (kind, scope, name) DO UPDATE SET id = excluded.id, resolved_at = excluded.resolved_at`,
+		kind, scope, name, id, time.Now().Unix()); err != nil {
+		return fmt.Errorf("updating name cache: %w", err)
+	}
+	return nil
+}
+
+// DeleteID drops every cache entry that resolved to the given UUID. It is
+// used when CloudStack reports the UUID no longer exists, so the next
+// resolution looks the name up again. It returns how many entries were
+// dropped.
+func (s *Store) DeleteID(ctx context.Context, id string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM name_cache WHERE id = ?`, id)
+	if err != nil {
+		return 0, fmt.Errorf("invalidating name cache: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // RecordSample stores how long a CloudStack job of the given operation and

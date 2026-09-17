@@ -111,7 +111,12 @@ func newExtraSpecsFromBootstrapData(data params.BootstrapInstance) (*extraSpecs,
 	return spec, nil
 }
 
-// RunnerSpec is the fully resolved specification used to create a CloudStack VM.
+// RunnerSpec is the specification used to create a CloudStack VM.
+//
+// The *ID fields hold UUID overrides from extra_specs; Zone, ServiceOffering,
+// Template and Project carry the provider config defaults (name or UUID) and
+// are resolved by the client only when no override (including the pool's
+// flavor/image) applies.
 type RunnerSpec struct {
 	ZoneID            string
 	ServiceOfferingID string
@@ -119,6 +124,10 @@ type RunnerSpec struct {
 	NetworkIDs        []string
 	SSHKeyName        string
 	ProjectID         string
+	Zone              string
+	ServiceOffering   string
+	Template          string
+	Project           string
 	DisableUpdates    bool
 	EnableBootDebug   bool
 	ExtraPackages     []string
@@ -139,38 +148,16 @@ func GetRunnerSpecFromBootstrapParams(cfg *config.Config, data params.BootstrapI
 		return nil, fmt.Errorf("error loading extra specs: %w", err)
 	}
 
-	projectID, err := cfg.ProjectID()
-	if err != nil {
-		return nil, err
-	}
 	spec := &RunnerSpec{
+		Zone:            cfg.Zone,
+		ServiceOffering: cfg.ServiceOffering,
+		Template:        cfg.Template,
+		Project:         cfg.Project,
 		SSHKeyName:      cfg.SSHKeyName,
-		ProjectID:       projectID,
 		ExtraPackages:   extraSpecs.ExtraPackages,
 		Tools:           tools,
 		BootstrapParams: data,
 		ControllerID:    controllerID,
-	}
-
-	// Only resolve the config-level defaults that are not overridden. Each
-	// resolution is a CloudStack API call (the provider runs as a fresh
-	// process per operation, so nothing is cached across calls), and a pool's
-	// flavor/image or an extra_specs UUID replaces the corresponding default
-	// anyway.
-	if extraSpecs == nil || extraSpecs.ZoneID == nil || *extraSpecs.ZoneID == "" {
-		if spec.ZoneID, err = cfg.ZoneID(); err != nil {
-			return nil, err
-		}
-	}
-	if data.Flavor == "" && (extraSpecs == nil || extraSpecs.ServiceOfferingID == nil || *extraSpecs.ServiceOfferingID == "") {
-		if spec.ServiceOfferingID, err = cfg.ServiceOfferingID(); err != nil {
-			return nil, err
-		}
-	}
-	if data.Image == "" && (extraSpecs == nil || extraSpecs.TemplateID == nil || *extraSpecs.TemplateID == "") {
-		if spec.TemplateID, err = cfg.TemplateID(); err != nil {
-			return nil, err
-		}
 	}
 
 	spec.MergeExtraSpecs(extraSpecs)
@@ -216,16 +203,16 @@ func (r *RunnerSpec) MergeExtraSpecs(extra *extraSpecs) {
 
 // Validate performs basic validation of the runner spec.
 func (r *RunnerSpec) Validate() error {
-	if r.ZoneID == "" {
+	// Each resource needs some source: an extra_specs UUID, the pool's
+	// flavor/image, or the provider config default. Resolution happens at
+	// deploy time in the client.
+	if r.ZoneID == "" && r.Zone == "" {
 		return fmt.Errorf("missing zone_id")
 	}
-	// A pool's flavor/image are resolved at deploy time and take precedence
-	// over the config-level IDs, so only require the ID when no override
-	// exists.
-	if r.ServiceOfferingID == "" && r.BootstrapParams.Flavor == "" {
+	if r.ServiceOfferingID == "" && r.BootstrapParams.Flavor == "" && r.ServiceOffering == "" {
 		return fmt.Errorf("missing service_offering_id")
 	}
-	if r.TemplateID == "" && r.BootstrapParams.Image == "" {
+	if r.TemplateID == "" && r.BootstrapParams.Image == "" && r.Template == "" {
 		return fmt.Errorf("missing template_id")
 	}
 	if r.BootstrapParams.Name == "" {

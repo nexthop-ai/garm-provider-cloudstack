@@ -100,30 +100,27 @@ func TestGetRunnerSpecFromBootstrapParams(t *testing.T) {
 		ServiceOffering: "service-offering-id",
 		Template:        "template-id",
 	}
-	// Set resolved IDs directly for testing (normally set by ResolveNames())
-	cfg.SetResolvedIDs("zone-default", "service-offering-id", "template-id", "")
-
 	spec, err := GetRunnerSpecFromBootstrapParams(cfg, data, "controller-id")
 	require.NoError(t, err)
 	require.Equal(t, &RunnerSpec{
-		ZoneID:            "zone-override",
-		ServiceOfferingID: "service-offering-id",
-		TemplateID:        "template-id",
-		NetworkIDs:        nil,
-		DisableUpdates:    true,
-		EnableBootDebug:   true,
-		ExtraPackages:     []string{"pkg1"},
-		Tools:             mockTools,
-		BootstrapParams:   data,
-		ControllerID:      "controller-id",
+		ZoneID:          "zone-override",
+		Zone:            "zone-default",
+		ServiceOffering: "service-offering-id",
+		Template:        "template-id",
+		NetworkIDs:      nil,
+		DisableUpdates:  true,
+		EnableBootDebug: true,
+		ExtraPackages:   []string{"pkg1"},
+		Tools:           mockTools,
+		BootstrapParams: data,
+		ControllerID:    "controller-id",
 	}, spec)
 }
 
-// TestGetRunnerSpecOverridesSkipResolution asserts that config-level names
-// are not resolved (no CloudStack API call) when the pool overrides them via
-// flavor/image and extra_specs. The config points at an unreachable API and
-// has no pre-resolved IDs, so any lookup would fail.
-func TestGetRunnerSpecOverridesSkipResolution(t *testing.T) {
+// TestGetRunnerSpecCarriesConfigDefaults asserts that building a spec does
+// not resolve anything: config names are carried as fallbacks for the client
+// to resolve (with its cache) only when no override applies.
+func TestGetRunnerSpecCarriesConfigDefaults(t *testing.T) {
 	DefaultToolFetch = func(osType params.OSType, osArch params.OSArch, tools []params.RunnerApplicationDownload) (params.RunnerApplicationDownload, error) {
 		return params.RunnerApplicationDownload{}, nil
 	}
@@ -135,6 +132,7 @@ func TestGetRunnerSpecOverridesSkipResolution(t *testing.T) {
 		Zone:            "zone-name",
 		ServiceOffering: "offering-name",
 		Template:        "template-name",
+		Project:         "project-name",
 	}
 	data := params.BootstrapInstance{
 		Name:       "runner-name",
@@ -148,9 +146,12 @@ func TestGetRunnerSpecOverridesSkipResolution(t *testing.T) {
 	spec, err := GetRunnerSpecFromBootstrapParams(cfg, data, "controller-id")
 	require.NoError(t, err)
 	require.Equal(t, "zone-override", spec.ZoneID)
-	require.Empty(t, spec.ServiceOfferingID, "config offering must not be resolved when flavor is set")
-	require.Empty(t, spec.TemplateID, "config template must not be resolved when image is set")
-	require.Empty(t, spec.ProjectID)
+	require.Equal(t, "zone-name", spec.Zone)
+	require.Empty(t, spec.ServiceOfferingID)
+	require.Equal(t, "offering-name", spec.ServiceOffering)
+	require.Empty(t, spec.TemplateID)
+	require.Equal(t, "template-name", spec.Template)
+	require.Equal(t, "project-name", spec.Project)
 }
 
 func TestRunnerSpecValidate(t *testing.T) {

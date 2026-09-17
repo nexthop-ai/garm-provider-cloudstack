@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	cs "github.com/apache/cloudstack-go/v2/cloudstack"
 	"github.com/invopop/jsonschema"
 )
 
@@ -105,10 +104,16 @@ type Config struct {
 	// It caps the extra latency the adaptive schedule can add. Default: 30s.
 	PollIntervalMax Duration `toml:"poll_interval_max"`
 
-	// resolved caches UUIDs looked up on demand; see ZoneID() and friends.
-	resolved resolvedIDs
-	// client is created lazily, the first time a name has to be resolved.
-	client *cs.CloudStackClient
+	// CacheTTL is how long resolved UUIDs of zones, service offerings,
+	// projects, VPCs and networks are reused before the name is looked up
+	// again. Default: 24h.
+	CacheTTL Duration `toml:"cache_ttl"`
+
+	// TemplateCacheTTL is how long a resolved template UUID is reused. A
+	// replaced image is a new UUID under the same name, so this bounds how
+	// long deploys can keep using the old one (a deploy that fails because
+	// the UUID is gone also invalidates it immediately). Default: 20m.
+	TemplateCacheTTL Duration `toml:"template_cache_ttl"`
 }
 
 // DefaultAsyncTimeout is the default timeout for async CloudStack API calls (15 minutes).
@@ -133,6 +138,35 @@ func (c *Config) StateDBPath() string {
 	return filepath.Join(dir, StateDBFile)
 }
 
+// DefaultCacheTTL is the default lifetime of cached UUIDs for long-lived
+// resources (zones, offerings, projects, VPCs, networks).
+const DefaultCacheTTL = 24 * time.Hour
+
+// DefaultTemplateCacheTTL is the default lifetime of cached template UUIDs.
+const DefaultTemplateCacheTTL = 20 * time.Minute
+
+// GetCacheTTL returns the configured UUID cache lifetime, or the default.
+func (c *Config) GetCacheTTL() time.Duration {
+	if c.CacheTTL.Duration <= 0 {
+		return DefaultCacheTTL
+	}
+	return c.CacheTTL.Duration
+}
+
+// GetTemplateCacheTTL returns the configured template UUID cache lifetime,
+// or the default.
+func (c *Config) GetTemplateCacheTTL() time.Duration {
+	if c.TemplateCacheTTL.Duration <= 0 {
+		return DefaultTemplateCacheTTL
+	}
+	return c.TemplateCacheTTL.Duration
+}
+
+// IsUUID reports whether s looks like a CloudStack UUID rather than a name.
+func IsUUID(s string) bool {
+	return isUUID(s)
+}
+
 // GetPollIntervalMax returns the configured poll interval cap, or the default.
 func (c *Config) GetPollIntervalMax() time.Duration {
 	if c.PollIntervalMax.Duration <= 0 {
@@ -147,141 +181,6 @@ func (c *Config) GetAsyncTimeout() int64 {
 		return int64(DefaultAsyncTimeout.Seconds())
 	}
 	return int64(c.AsyncTimeout.Seconds())
-}
-
-// resolvedIDs caches the UUIDs each resource name resolves to. Zero values
-// mean "not resolved yet".
-type resolvedIDs struct {
-	ZoneID            string
-	ServiceOfferingID string
-	TemplateID        string
-	ProjectID         string
-	projectResolved   bool
-}
-
-// ZoneID returns the zone UUID, resolving the configured name on first use.
-func (c *Config) ZoneID() (string, error) {
-	if c.resolved.ZoneID != "" {
-		return c.resolved.ZoneID, nil
-	}
-	if isUUID(c.Zone) {
-		c.resolved.ZoneID = c.Zone
-		return c.Zone, nil
-	}
-	zone, _, err := c.cs().Zone.GetZoneByName(c.Zone)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve zone %q: %w", c.Zone, err)
-	}
-	c.resolved.ZoneID = zone.Id
-	return zone.Id, nil
-}
-
-// ServiceOfferingID returns the compute offering UUID, resolving the
-// configured name on first use.
-func (c *Config) ServiceOfferingID() (string, error) {
-	if c.resolved.ServiceOfferingID != "" {
-		return c.resolved.ServiceOfferingID, nil
-	}
-	if isUUID(c.ServiceOffering) {
-		c.resolved.ServiceOfferingID = c.ServiceOffering
-		return c.ServiceOffering, nil
-	}
-	so, _, err := c.cs().ServiceOffering.GetServiceOfferingByName(c.ServiceOffering)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve service_offering %q: %w", c.ServiceOffering, err)
-	}
-	c.resolved.ServiceOfferingID = so.Id
-	return so.Id, nil
-}
-
-// TemplateID returns the template UUID, resolving the configured name on
-// first use. The lookup is scoped to the configured zone and project.
-func (c *Config) TemplateID() (string, error) {
-	if c.resolved.TemplateID != "" {
-		return c.resolved.TemplateID, nil
-	}
-	if isUUID(c.Template) {
-		c.resolved.TemplateID = c.Template
-		return c.Template, nil
-	}
-	zoneID, err := c.ZoneID()
-	if err != nil {
-		return "", err
-	}
-	projectID, err := c.ProjectID()
-	if err != nil {
-		return "", err
-	}
-	p := c.cs().Template.NewListTemplatesParams("executable")
-	p.SetName(c.Template)
-	p.SetZoneid(zoneID)
-	if projectID != "" {
-		p.SetProjectid(projectID)
-	}
-	resp, err := c.cs().Template.ListTemplates(p)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve template %q: %w", c.Template, err)
-	}
-	if resp.Count == 0 {
-		return "", fmt.Errorf("template %q not found", c.Template)
-	}
-	// If multiple templates match, use the first one
-	c.resolved.TemplateID = resp.Templates[0].Id
-	return c.resolved.TemplateID, nil
-}
-
-// ProjectID returns the project UUID, resolving the configured name on
-// first use. It is empty when no project is configured.
-func (c *Config) ProjectID() (string, error) {
-	if c.resolved.projectResolved {
-		return c.resolved.ProjectID, nil
-	}
-	if c.Project == "" {
-		c.resolved.projectResolved = true
-		return "", nil
-	}
-	if isUUID(c.Project) {
-		c.resolved.ProjectID = c.Project
-		c.resolved.projectResolved = true
-		return c.Project, nil
-	}
-	p := c.cs().Project.NewListProjectsParams()
-	p.SetName(c.Project)
-	p.SetListall(true)
-	resp, err := c.cs().Project.ListProjects(p)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve project %q: %w", c.Project, err)
-	}
-	if resp.Count == 0 {
-		return "", fmt.Errorf("project %q not found", c.Project)
-	}
-	if resp.Count > 1 {
-		return "", fmt.Errorf("multiple projects found matching %q", c.Project)
-	}
-	c.resolved.ProjectID = resp.Projects[0].Id
-	c.resolved.projectResolved = true
-	return c.resolved.ProjectID, nil
-}
-
-// SetResolvedIDs pre-populates the UUID cache so no lookups are performed
-// (for testing purposes).
-func (c *Config) SetResolvedIDs(zoneID, serviceOfferingID, templateID, projectID string) {
-	c.resolved = resolvedIDs{
-		ZoneID:            zoneID,
-		ServiceOfferingID: serviceOfferingID,
-		TemplateID:        templateID,
-		ProjectID:         projectID,
-		projectResolved:   true,
-	}
-}
-
-// cs returns the CloudStack client used for name resolution, creating it on
-// first use.
-func (c *Config) cs() *cs.CloudStackClient {
-	if c.client == nil {
-		c.client = cs.NewClient(c.APIURL, c.APIKey, c.Secret, c.VerifySSL)
-	}
-	return c.client
 }
 
 // NewConfig loads and validates the provider configuration from a TOML file.
@@ -323,19 +222,21 @@ func (c *Config) Validate() error {
 // configSchema is a struct that mirrors Config but with JSON schema tags for documentation.
 // The actual Config uses TOML tags, but GARM expects a JSON schema for validation.
 type configSchema struct {
-	APIURL          string `json:"api_url" jsonschema:"required,description=CloudStack API URL"`
-	APIKey          string `json:"api_key" jsonschema:"required,description=CloudStack API key"`
-	Secret          string `json:"secret" jsonschema:"required,description=CloudStack API secret"`
-	VerifySSL       bool   `json:"verify_ssl,omitempty" jsonschema:"description=Verify SSL certificates (default: false)"`
-	Zone            string `json:"zone" jsonschema:"required,description=CloudStack zone name or UUID"`
-	ServiceOffering string `json:"service_offering" jsonschema:"required,description=Compute offering name or UUID"`
-	Template        string `json:"template" jsonschema:"required,description=VM template name or UUID"`
-	Project         string `json:"project,omitempty" jsonschema:"description=CloudStack project name or UUID (optional)"`
-	SSHKeyName      string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
-	AsyncTimeout    string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
-	Expunge         bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
-	StateDir        string `json:"state_dir,omitempty" jsonschema:"description=Directory for the provider state database (default: /var/lib/garm)"`
-	PollIntervalMax string `json:"poll_interval_max,omitempty" jsonschema:"description=Maximum delay between async job polls (e.g. 30s - default: 30s)"`
+	APIURL           string `json:"api_url" jsonschema:"required,description=CloudStack API URL"`
+	APIKey           string `json:"api_key" jsonschema:"required,description=CloudStack API key"`
+	Secret           string `json:"secret" jsonschema:"required,description=CloudStack API secret"`
+	VerifySSL        bool   `json:"verify_ssl,omitempty" jsonschema:"description=Verify SSL certificates (default: false)"`
+	Zone             string `json:"zone" jsonschema:"required,description=CloudStack zone name or UUID"`
+	ServiceOffering  string `json:"service_offering" jsonschema:"required,description=Compute offering name or UUID"`
+	Template         string `json:"template" jsonschema:"required,description=VM template name or UUID"`
+	Project          string `json:"project,omitempty" jsonschema:"description=CloudStack project name or UUID (optional)"`
+	SSHKeyName       string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
+	AsyncTimeout     string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
+	Expunge          bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
+	StateDir         string `json:"state_dir,omitempty" jsonschema:"description=Directory for the provider state database (default: /var/lib/garm)"`
+	PollIntervalMax  string `json:"poll_interval_max,omitempty" jsonschema:"description=Maximum delay between async job polls (e.g. 30s - default: 30s)"`
+	CacheTTL         string `json:"cache_ttl,omitempty" jsonschema:"description=How long resolved zone/offering/project/network UUIDs are cached (default: 24h)"`
+	TemplateCacheTTL string `json:"template_cache_ttl,omitempty" jsonschema:"description=How long resolved template UUIDs are cached (default: 20m)"`
 }
 
 // GetJSONSchema returns the JSON schema for the provider configuration.

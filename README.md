@@ -43,6 +43,8 @@ async_timeout    = "15m"          # optional, default "15m"
 expunge          = true           # optional, default false
 state_dir        = "/var/lib/garm" # optional, default "/var/lib/garm"
 poll_interval_max = "30s"         # optional, default "30s"
+cache_ttl        = "24h"          # optional, default "24h"
+template_cache_ttl = "20m"        # optional, default "20m"
 ```
 
 Field description:
@@ -73,11 +75,22 @@ Field description:
 - `poll_interval_max`: Upper bound on the delay between two polls of an async
   job, which caps the latency the adaptive schedule can add when a job runs
   longer than usual. Default is `"30s"`.
+- `cache_ttl`: How long the UUIDs that zone, service offering, project, VPC
+  and network names resolve to are cached in the state database before the
+  name is looked up again. Default is `"24h"`.
+- `template_cache_ttl`: How long a resolved template UUID is cached. A
+  replaced image is a new UUID under the same name, so this bounds how long
+  deploys can keep targeting the old one. A deploy that CloudStack rejects
+  because a cached UUID no longer exists drops that entry and retries with a
+  fresh lookup immediately, so this is only a bound, not the typical delay.
+  Default is `"20m"`.
 
 Each resource field (`zone`, `service_offering`, `template`, `project`)
 accepts either a symbolic name or a UUID. If the value looks like a UUID,
 it's used directly; otherwise, the provider resolves the name to a UUID
-via the CloudStack API the first time it is needed.
+via the CloudStack API the first time it is needed and caches the result
+(see `cache_ttl` and `template_cache_ttl`). Using UUIDs avoids the lookups
+altogether.
 
 Once you have a config file (for example `/etc/garm/garm-provider-cloudstack.toml`), reference it from the `garm` configuration as an external provider:
 

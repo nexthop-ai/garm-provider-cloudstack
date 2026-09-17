@@ -109,3 +109,46 @@ func TestConcurrentWriters(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, writers*perWriter)
 }
+
+func TestNameCache(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "provider.db"))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s.Close()) }()
+
+	_, ok, err := s.GetID(ctx, "template", "zone1/proj1", "img", time.Hour)
+	require.NoError(t, err)
+	require.False(t, ok, "miss on empty cache")
+
+	require.NoError(t, s.PutID(ctx, "template", "zone1/proj1", "img", "uuid-1"))
+	id, ok, err := s.GetID(ctx, "template", "zone1/proj1", "img", time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "uuid-1", id)
+
+	// Same name in another scope is a different entry.
+	_, ok, err = s.GetID(ctx, "template", "zone2/proj1", "img", time.Hour)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// Expired entries are misses.
+	_, ok, err = s.GetID(ctx, "template", "zone1/proj1", "img", -time.Second)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// Re-resolving replaces the entry.
+	require.NoError(t, s.PutID(ctx, "template", "zone1/proj1", "img", "uuid-2"))
+	id, ok, err = s.GetID(ctx, "template", "zone1/proj1", "img", time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "uuid-2", id)
+
+	// Invalidation by UUID drops every entry pointing at it.
+	require.NoError(t, s.PutID(ctx, "template", "zone2/proj1", "img", "uuid-2"))
+	n, err := s.DeleteID(ctx, "uuid-2")
+	require.NoError(t, err)
+	require.EqualValues(t, 2, n)
+	_, ok, err = s.GetID(ctx, "template", "zone1/proj1", "img", time.Hour)
+	require.NoError(t, err)
+	require.False(t, ok)
+}
