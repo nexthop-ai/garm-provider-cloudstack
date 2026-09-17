@@ -17,31 +17,159 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
 	"github.com/cloudbase/garm-provider-cloudstack/config"
+	"github.com/cloudbase/garm-provider-cloudstack/internal/poll"
 	"github.com/cloudbase/garm-provider-cloudstack/internal/spec"
+	"github.com/cloudbase/garm-provider-cloudstack/internal/store"
 	"github.com/cloudbase/garm-provider-cloudstack/internal/util"
 	garmErrors "github.com/cloudbase/garm-provider-common/errors"
 )
 
 // CloudStackCli wraps the CloudStack Go client and provider configuration.
 type CloudStackCli struct {
-	cfg    *config.Config
+	cfg *config.Config
+	// client waits for async jobs itself (cloudstack-go's built-in 1s, 2s,
+	// 3s... polling ramp). Used for everything except deploy and destroy.
 	client *cs.CloudStackClient
+	// syncClient returns as soon as CloudStack accepts an async command.
+	// Deploy and destroy go through it and are then polled with a schedule
+	// learned from previous jobs, see waitForJob.
+	syncClient *cs.CloudStackClient
+	// store persists observed job durations across invocations. nil when
+	// the state database could not be opened; polling then uses the seeds.
+	store *store.Store
+	clock poll.Clock
 }
 
 func NewCloudStackCli(cfg *config.Config) (*CloudStackCli, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil config")
 	}
-	// Use configurable async timeout (default 15 minutes) for slow VM deployments
-	cli := cs.NewAsyncClient(cfg.APIURL, cfg.APIKey, cfg.Secret, cfg.VerifySSL, cs.WithAsyncTimeout(cfg.GetAsyncTimeout()))
-	return &CloudStackCli{cfg: cfg, client: cli}, nil
+	c := &CloudStackCli{
+		cfg: cfg,
+		// Use configurable async timeout (default 15 minutes) for slow VM deployments
+		client:     cs.NewAsyncClient(cfg.APIURL, cfg.APIKey, cfg.Secret, cfg.VerifySSL, cs.WithAsyncTimeout(cfg.GetAsyncTimeout())),
+		syncClient: cs.NewClient(cfg.APIURL, cfg.APIKey, cfg.Secret, cfg.VerifySSL),
+		clock:      poll.RealClock,
+	}
+	st, err := store.Open(cfg.StateDBPath())
+	if err != nil {
+		slog.Warn("failed to open provider state database; async job polling will not adapt",
+			"path", cfg.StateDBPath(), "error", err)
+	} else {
+		c.store = st
+	}
+	return c, nil
+}
+
+// Close releases resources held by the client.
+func (c *CloudStackCli) Close() error {
+	if c.store != nil {
+		return c.store.Close()
+	}
+	return nil
+}
+
+// Async job kinds whose durations are tracked separately.
+const (
+	opDeploy  = "deploy"
+	opDestroy = "destroy"
+	// keepSamples bounds the history per op/key. Percentiles over the last
+	// 50 jobs adapt within a day of normal churn while ignoring one-off
+	// outliers.
+	keepSamples = 50
+	// minPollInterval is the floor on the delay between two polls.
+	minPollInterval = 5 * time.Second
+)
+
+// Cold-start estimates, used until a job kind has observations of its own.
+// P10 errs on the early side: a first poll that finds the job still running
+// costs one API call, one that comes late delays every job until the
+// history corrects it. P90 errs on the late side so polling does not fall
+// back to the max interval while a slow-but-normal job is still likely to
+// finish.
+var seeds = map[string]poll.Seed{
+	opDeploy:  {P10: 15 * time.Second, P90: 180 * time.Second},
+	opDestroy: {P10: 3 * time.Second, P90: 30 * time.Second},
+}
+
+// waitForJob polls an async job until it completes and returns its raw
+// jobresult. The poll schedule is derived from how long previous jobs of the
+// same op/key took (falling back to op-wide samples, then to the seed), and
+// the observed duration is recorded for the next invocation. Failures and
+// timeouts are not recorded, so a bad day does not stretch future schedules.
+//
+// A timeout is reported as cs.AsyncTimeoutErr so callers keep their existing
+// handling of cloudstack-go's async timeout.
+func (c *CloudStackCli) waitForJob(ctx context.Context, op, key, jobID string) (json.RawMessage, error) {
+	started := c.clock.Now()
+	timeout := time.Duration(c.cfg.GetAsyncTimeout()) * time.Second
+
+	sched := poll.Plan(c.samples(ctx, op, key), seeds[op], minPollInterval, c.cfg.GetPollIntervalMax(), timeout)
+	slog.Debug("waiting for async job", "op", op, "key", key, "job_id", jobID, "first_poll", sched.First)
+
+	var result json.RawMessage
+	observed, err := poll.Wait(ctx, c.clock, started, sched, timeout, func(context.Context) (bool, error) {
+		p := c.syncClient.Asyncjob.NewQueryAsyncJobResultParams(jobID)
+		r, err := c.syncClient.Asyncjob.QueryAsyncJobResult(p)
+		if err != nil {
+			return false, err
+		}
+		switch r.Jobstatus {
+		case 1: // finished successfully
+			result = r.Jobresult
+			return true, nil
+		case 2: // failed
+			if r.Jobresulttype == "text" {
+				return false, fmt.Errorf("%s", string(r.Jobresult))
+			}
+			return false, fmt.Errorf("undefined error: %s", string(r.Jobresult))
+		default:
+			return false, nil
+		}
+	})
+	if err != nil {
+		if errors.Is(err, poll.ErrTimeout) {
+			return nil, fmt.Errorf("%w: job %s (%s)", cs.AsyncTimeoutErr, jobID, op)
+		}
+		return nil, err
+	}
+
+	slog.Debug("async job finished", "op", op, "key", key, "job_id", jobID, "observed", observed, "elapsed", c.clock.Now().Sub(started))
+	if c.store != nil {
+		if err := c.store.RecordSample(ctx, op, key, observed, keepSamples); err != nil {
+			slog.Warn("failed to record job duration", "op", op, "key", key, "error", err)
+		}
+	}
+	return result, nil
+}
+
+// samples returns the recent durations to plan a job of op/key from: the
+// key's own history when it has enough, otherwise the op-wide history.
+func (c *CloudStackCli) samples(ctx context.Context, op, key string) []time.Duration {
+	if c.store == nil {
+		return nil
+	}
+	got, err := c.store.Samples(ctx, op, key, keepSamples)
+	if err != nil {
+		slog.Warn("failed to read job duration samples", "op", op, "key", key, "error", err)
+		return nil
+	}
+	if len(got) < poll.MinSamples {
+		all, err := c.store.Samples(ctx, op, "", keepSamples)
+		if err == nil && len(all) >= poll.MinSamples {
+			return all
+		}
+	}
+	return got
 }
 
 func (c *CloudStackCli) Config() *config.Config {
@@ -103,8 +231,17 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 		params.SetProjectid(spec.ProjectID)
 	}
 
-	resp, err := c.client.VirtualMachine.DeployVirtualMachine(params)
+	// Submit through the sync client and wait ourselves: the immediate
+	// response carries the job ID (and the VM ID), completion is polled with
+	// a schedule learned from earlier deploys of the same offering/template.
+	resp, err := c.syncClient.VirtualMachine.DeployVirtualMachine(params)
 	if err != nil {
+		return "", fmt.Errorf("failed to deploy virtual machine: %w", err)
+	}
+	if resp.JobID == "" {
+		return "", fmt.Errorf("empty job id in deploy response")
+	}
+	if _, err := c.waitForJob(ctx, opDeploy, serviceOfferingID+"/"+templateID, resp.JobID); err != nil {
 		return "", fmt.Errorf("failed to deploy virtual machine: %w", err)
 	}
 	if resp.Id == "" {
@@ -305,11 +442,11 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 		}
 		return err
 	}
-	params := c.client.VirtualMachine.NewDestroyVirtualMachineParams(vm.Id)
+	params := c.syncClient.VirtualMachine.NewDestroyVirtualMachineParams(vm.Id)
 	if expunge {
 		params.SetExpunge(true)
 	}
-	if _, err := c.client.VirtualMachine.DestroyVirtualMachine(params); err != nil {
+	if err := c.destroy(ctx, params); err != nil {
 		if util.IsCloudStackNotFoundErr(err) {
 			return nil
 		}
@@ -329,6 +466,25 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 		return fmt.Errorf("failed to destroy instance: %w", err)
 	}
 	return nil
+}
+
+// destroy submits the destroy command and waits for its job with the
+// learned schedule. Expunging destroys take longer than plain ones, so the
+// two are tracked separately.
+func (c *CloudStackCli) destroy(ctx context.Context, params *cs.DestroyVirtualMachineParams) error {
+	resp, err := c.syncClient.VirtualMachine.DestroyVirtualMachine(params)
+	if err != nil {
+		return err
+	}
+	if resp.JobID == "" {
+		return fmt.Errorf("empty job id in destroy response")
+	}
+	key := "destroy"
+	if expunge, ok := params.GetExpunge(); ok && expunge {
+		key = "expunge"
+	}
+	_, err = c.waitForJob(ctx, opDestroy, key, resp.JobID)
+	return err
 }
 
 // isInstanceGoneOrDestroying reports whether a VM (identified by CloudStack ID) no

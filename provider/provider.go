@@ -56,6 +56,11 @@ func NewCloudStackProvider(ctx context.Context, configPath, controllerID string)
 	}, nil
 }
 
+// Close releases the provider's resources (the state database handle).
+func (p *CloudStackProvider) Close() error {
+	return p.cli.Close()
+}
+
 func (p *CloudStackProvider) CreateInstance(ctx context.Context, bootstrapParams params.BootstrapInstance) (params.ProviderInstance, error) {
 	slog.Debug("CloudStackProvider.CreateInstance: starting",
 		"instance_name", bootstrapParams.Name,

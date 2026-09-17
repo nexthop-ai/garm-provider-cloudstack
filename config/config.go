@@ -18,6 +18,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -94,6 +95,16 @@ type Config struct {
 	// Default: false (VMs remain in "Destroyed" state and can be recovered).
 	Expunge bool `toml:"expunge"`
 
+	// StateDir is where the provider keeps its small SQLite state database
+	// (observed job durations used to schedule async job polling). It must
+	// persist across invocations to be useful. Default: /var/lib/garm.
+	StateDir string `toml:"state_dir"`
+
+	// PollIntervalMax bounds how long the provider waits between two
+	// queryAsyncJobResult calls once a job is running longer than usual.
+	// It caps the extra latency the adaptive schedule can add. Default: 30s.
+	PollIntervalMax Duration `toml:"poll_interval_max"`
+
 	// resolved caches UUIDs looked up on demand; see ZoneID() and friends.
 	resolved resolvedIDs
 	// client is created lazily, the first time a name has to be resolved.
@@ -102,6 +113,33 @@ type Config struct {
 
 // DefaultAsyncTimeout is the default timeout for async CloudStack API calls (15 minutes).
 const DefaultAsyncTimeout = 15 * time.Minute
+
+// DefaultStateDir is where provider state lives unless state_dir is set. In
+// the GARM pod this is the persistent data volume.
+const DefaultStateDir = "/var/lib/garm"
+
+// StateDBFile is the name of the provider state database inside StateDir.
+const StateDBFile = "garm-provider-cloudstack.db"
+
+// DefaultPollIntervalMax is the default cap on the delay between polls.
+const DefaultPollIntervalMax = 30 * time.Second
+
+// StateDBPath returns the path of the provider state database.
+func (c *Config) StateDBPath() string {
+	dir := c.StateDir
+	if dir == "" {
+		dir = DefaultStateDir
+	}
+	return filepath.Join(dir, StateDBFile)
+}
+
+// GetPollIntervalMax returns the configured poll interval cap, or the default.
+func (c *Config) GetPollIntervalMax() time.Duration {
+	if c.PollIntervalMax.Duration <= 0 {
+		return DefaultPollIntervalMax
+	}
+	return c.PollIntervalMax.Duration
+}
 
 // GetAsyncTimeout returns the configured async timeout in seconds, or the default if not set.
 func (c *Config) GetAsyncTimeout() int64 {
@@ -296,6 +334,8 @@ type configSchema struct {
 	SSHKeyName      string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
 	AsyncTimeout    string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
 	Expunge         bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
+	StateDir        string `json:"state_dir,omitempty" jsonschema:"description=Directory for the provider state database (default: /var/lib/garm)"`
+	PollIntervalMax string `json:"poll_interval_max,omitempty" jsonschema:"description=Maximum delay between async job polls (e.g. 30s - default: 30s)"`
 }
 
 // GetJSONSchema returns the JSON schema for the provider configuration.

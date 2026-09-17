@@ -41,6 +41,8 @@ project          = "my-project"   # optional
 ssh_key_name     = "my-keypair"   # optional
 async_timeout    = "15m"          # optional, default "15m"
 expunge          = true           # optional, default false
+state_dir        = "/var/lib/garm" # optional, default "/var/lib/garm"
+poll_interval_max = "30s"         # optional, default "30s"
 ```
 
 Field description:
@@ -60,11 +62,22 @@ Field description:
   environment take longer to complete.
 - `expunge`: If `true`, VMs are permanently deleted (expunged) when destroyed
   instead of lingering in the "Destroyed" state. Default is `false`.
+- `state_dir`: Directory holding the provider's small SQLite state database
+  (`garm-provider-cloudstack.db`). The provider records how long VM deploy
+  and destroy jobs took and uses that history to decide when to poll
+  CloudStack for job completion, instead of a fixed backoff. GARM runs the
+  provider as a new process for every operation, so this must be a
+  persistent, writable directory. If it cannot be opened the provider logs
+  a warning and polls with conservative built-in estimates. Default is
+  `/var/lib/garm`.
+- `poll_interval_max`: Upper bound on the delay between two polls of an async
+  job, which caps the latency the adaptive schedule can add when a job runs
+  longer than usual. Default is `"30s"`.
 
 Each resource field (`zone`, `service_offering`, `template`, `project`)
 accepts either a symbolic name or a UUID. If the value looks like a UUID,
 it's used directly; otherwise, the provider resolves the name to a UUID
-via the CloudStack API at startup.
+via the CloudStack API the first time it is needed.
 
 Once you have a config file (for example `/etc/garm/garm-provider-cloudstack.toml`), reference it from the `garm` configuration as an external provider:
 

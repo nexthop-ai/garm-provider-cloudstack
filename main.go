@@ -47,6 +47,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if closer, ok := prov.(interface{ Close() error }); ok {
+		defer closer.Close() //nolint:errcheck // best effort at exit
+	}
+
 	result, err := executionEnv.Run(ctx, prov)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to run command: %+v\n", err)
