@@ -10,7 +10,7 @@ on:
 
 jobs:
   go-tests:
-    runs-on: k8s-staging-nano-test
+    runs-on: cloudstack-staging-ubuntu24-test
 
     steps:
       - name: Checkout
