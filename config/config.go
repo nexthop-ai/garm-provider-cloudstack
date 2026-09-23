@@ -114,6 +114,15 @@ type Config struct {
 	// long deploys can keep using the old one (a deploy that fails because
 	// the UUID is gone also invalidates it immediately). Default: 20m.
 	TemplateCacheTTL Duration `toml:"template_cache_ttl"`
+
+	// DestroyOnDisconnectedHost allows destroying a running VM while the
+	// hypervisor it runs on is not "Up" in CloudStack (agent disconnected,
+	// connecting, in alert). By default the provider refuses and GARM retries
+	// later: an expunge accepted while the host agent is unreachable removes
+	// the VM from CloudStack's database, frees its IP, but never stops the
+	// libvirt domain, which keeps running with that IP and breaks the next
+	// VM it is handed to. Default: false.
+	DestroyOnDisconnectedHost bool `toml:"destroy_on_disconnected_host"`
 }
 
 // DefaultAsyncTimeout is the default timeout for async CloudStack API calls (15 minutes).
@@ -233,21 +242,22 @@ func (c *Config) Validate() error {
 // configSchema is a struct that mirrors Config but with JSON schema tags for documentation.
 // The actual Config uses TOML tags, but GARM expects a JSON schema for validation.
 type configSchema struct {
-	APIURL           string `json:"api_url" jsonschema:"required,description=CloudStack API URL"`
-	APIKey           string `json:"api_key" jsonschema:"required,description=CloudStack API key"`
-	Secret           string `json:"secret" jsonschema:"required,description=CloudStack API secret"`
-	VerifySSL        bool   `json:"verify_ssl,omitempty" jsonschema:"description=Verify SSL certificates (default: false)"`
-	Zone             string `json:"zone" jsonschema:"required,description=CloudStack zone name or UUID"`
-	ServiceOffering  string `json:"service_offering" jsonschema:"required,description=Compute offering name or UUID"`
-	Template         string `json:"template" jsonschema:"required,description=VM template name or UUID"`
-	Project          string `json:"project,omitempty" jsonschema:"description=CloudStack project name or UUID (optional)"`
-	SSHKeyName       string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
-	AsyncTimeout     string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
-	Expunge          bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
-	StateDir         string `json:"state_dir,omitempty" jsonschema:"description=Directory for the provider state database (default: /var/lib/garm)"`
-	PollIntervalMax  string `json:"poll_interval_max,omitempty" jsonschema:"description=Maximum delay between async job polls (e.g. 30s - default: 30s)"`
-	CacheTTL         string `json:"cache_ttl,omitempty" jsonschema:"description=How long resolved zone/offering/project/network UUIDs are cached (default: 24h)"`
-	TemplateCacheTTL string `json:"template_cache_ttl,omitempty" jsonschema:"description=How long resolved template UUIDs are cached (default: 20m)"`
+	APIURL                    string `json:"api_url" jsonschema:"required,description=CloudStack API URL"`
+	APIKey                    string `json:"api_key" jsonschema:"required,description=CloudStack API key"`
+	Secret                    string `json:"secret" jsonschema:"required,description=CloudStack API secret"`
+	VerifySSL                 bool   `json:"verify_ssl,omitempty" jsonschema:"description=Verify SSL certificates (default: false)"`
+	Zone                      string `json:"zone" jsonschema:"required,description=CloudStack zone name or UUID"`
+	ServiceOffering           string `json:"service_offering" jsonschema:"required,description=Compute offering name or UUID"`
+	Template                  string `json:"template" jsonschema:"required,description=VM template name or UUID"`
+	Project                   string `json:"project,omitempty" jsonschema:"description=CloudStack project name or UUID (optional)"`
+	SSHKeyName                string `json:"ssh_key_name,omitempty" jsonschema:"description=SSH keypair name (optional)"`
+	AsyncTimeout              string `json:"async_timeout,omitempty" jsonschema:"description=Async API call timeout (e.g. 15m - default: 15m)"`
+	Expunge                   bool   `json:"expunge,omitempty" jsonschema:"description=Expunge VMs immediately on deletion (default: false)"`
+	StateDir                  string `json:"state_dir,omitempty" jsonschema:"description=Directory for the provider state database (default: /var/lib/garm)"`
+	PollIntervalMax           string `json:"poll_interval_max,omitempty" jsonschema:"description=Maximum delay between async job polls (e.g. 30s - default: 30s)"`
+	CacheTTL                  string `json:"cache_ttl,omitempty" jsonschema:"description=How long resolved zone/offering/project/network UUIDs are cached (default: 24h)"`
+	TemplateCacheTTL          string `json:"template_cache_ttl,omitempty" jsonschema:"description=How long resolved template UUIDs are cached (default: 20m)"`
+	DestroyOnDisconnectedHost bool   `json:"destroy_on_disconnected_host,omitempty" jsonschema:"description=Destroy running VMs even when their host is not Up in CloudStack; risks orphaned libvirt domains (default: false)"`
 }
 
 // GetJSONSchema returns the JSON schema for the provider configuration.

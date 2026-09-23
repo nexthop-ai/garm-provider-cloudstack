@@ -16,7 +16,13 @@
 package util
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"syscall"
 	"testing"
 
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
@@ -131,6 +137,36 @@ func TestIsCloudStackNotFoundErr(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := IsCloudStackNotFoundErr(tt.err)
 			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestIsTransientAPIErr(t *testing.T) {
+	var syntaxErr error = &json.SyntaxError{Offset: 1}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"json syntax (HTML body)", syntaxErr, true},
+		{"wrapped json syntax", fmt.Errorf("failed to list instances: %w", syntaxErr), true},
+		{"string only invalid character", errors.New("invalid character '<' looking for beginning of value"), true},
+		{"unexpected EOF", io.ErrUnexpectedEOF, true},
+		{"connection refused", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, true},
+		{"5xx", errors.New("CloudStack API error 503 (CSExceptionErrorCode: 9999): unavailable"), true},
+		{"4xx", errors.New("CloudStack API error 431 (CSExceptionErrorCode: 4350): Invalid parameter id"), false},
+		{"not found", errors.New("No match found for foo"), false},
+		{"context canceled", context.Canceled, false},
+		{"deadline", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), false},
+		{"async timeout", cs.AsyncTimeoutErr, false},
+		{"generic", errors.New("failed to destroy vm with specified vmId"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsTransientAPIErr(tc.err); got != tc.want {
+				t.Fatalf("IsTransientAPIErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
 		})
 	}
 }

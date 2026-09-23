@@ -16,9 +16,14 @@
 package util
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
+	"syscall"
 
 	cs "github.com/apache/cloudstack-go/v2/cloudstack"
 	"github.com/cloudbase/garm-provider-common/params"
@@ -78,4 +83,50 @@ func IsCloudStackNotFoundErr(err error) bool {
 	// CloudStack also returns "entity does not exist" for invalid UUIDs.
 	return strings.Contains(errLower, "no match found for") ||
 		strings.Contains(errLower, "entity does not exist")
+}
+
+// IsTransientAPIErr reports whether err looks like the CloudStack API being
+// momentarily unavailable rather than rejecting the request: a non-JSON body
+// (a management server that is restarting answers with an HTML error page,
+// which cloudstack-go surfaces as a JSON syntax error such as "invalid
+// character '<' looking for beginning of value"), a truncated body, a
+// connection-level failure, or an HTTP 5xx. Such calls are safe to repeat
+// after a short wait. Context cancellation and async job timeouts are not
+// transient: the caller decided to stop waiting.
+func IsTransientAPIErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, cs.AsyncTimeoutErr) {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"invalid character",
+		"unexpected end of json input",
+		"cloudstack api error 50",
+		"connection refused",
+		"connection reset by peer",
+		"no such host",
+		"tls handshake timeout",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }

@@ -50,7 +50,20 @@ type fakeCloudStack struct {
 	calls       map[string]int
 	templateID  string
 	softDeleted bool
+	// htmlFailures makes the next N requests answer like a restarting
+	// management server: HTTP 502 with an HTML body.
+	htmlFailures int
+	// pollHTMLFailures does the same for queryAsyncJobResult only.
+	pollHTMLFailures int
+	// hostState is what listHosts reports for the VM's host ("Up" when
+	// empty). vmState is what listVirtualMachines reports ("Running" when
+	// empty). vmGone makes listVirtualMachines return no VM at all.
+	hostState string
+	vmState   string
+	vmGone    bool
 }
+
+const hostID = "55555555-5555-5555-5555-555555555555"
 
 func (f *fakeCloudStack) count(cmd string) int {
 	f.mu.Lock()
@@ -64,13 +77,49 @@ func (f *fakeCloudStack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls[cmd]++
 	current := f.templateID
+	html := f.htmlFailures > 0
+	if html {
+		f.htmlFailures--
+	}
+	if cmd == "queryAsyncJobResult" && f.pollHTMLFailures > 0 {
+		f.pollHTMLFailures--
+		html = true
+	}
+	hostState, vmState, vmGone := f.hostState, f.vmState, f.vmGone
 	f.mu.Unlock()
 
 	reply := func(v any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	if html {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html><body><h1>502 Bad Gateway</h1></body></html>"))
+		return
+	}
+	if hostState == "" {
+		hostState = "Up"
+	}
+	if vmState == "" {
+		vmState = "Running"
+	}
 	switch cmd {
+	case "listVirtualMachines":
+		if vmGone {
+			reply(map[string]any{"listvirtualmachinesresponse": map[string]any{"count": 0}})
+			return
+		}
+		reply(map[string]any{"listvirtualmachinesresponse": map[string]any{"count": 1, "virtualmachine": []any{map[string]any{
+			"id": vmID, "name": "runner-1", "displayname": "runner-1", "state": vmState, "hostid": hostID, "hostname": "hv111",
+			"tags": []any{map[string]any{"key": "GARM_CONTROLLER_ID", "value": "ctrl"}, map[string]any{"key": "GARM_POOL_ID", "value": "pool-1"}},
+		}}}})
+	case "listHosts":
+		reply(map[string]any{"listhostsresponse": map[string]any{"count": 1, "host": []any{map[string]any{
+			"id": hostID, "name": "hv111", "state": hostState, "resourcestate": "Enabled",
+		}}}})
+	case "destroyVirtualMachine":
+		reply(map[string]any{"destroyvirtualmachineresponse": map[string]any{"jobid": "job-destroy"}})
 	case "listZones":
 		reply(map[string]any{"listzonesresponse": map[string]any{"count": 1, "zone": []any{map[string]any{"id": zoneID, "name": r.FormValue("name")}}}})
 	case "listServiceOfferings":

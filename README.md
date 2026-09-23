@@ -45,6 +45,7 @@ state_dir        = "/var/lib/garm" # optional, default "/var/lib/garm"
 poll_interval_max = "30s"         # optional, default "30s"
 cache_ttl        = "24h"          # optional, default "24h"
 template_cache_ttl = "20m"        # optional, default "20m"
+destroy_on_disconnected_host = false # optional, default false
 ```
 
 Field description:
@@ -84,6 +85,15 @@ Field description:
   because a cached UUID no longer exists drops that entry and retries with a
   fresh lookup immediately, so this is only a bound, not the typical delay.
   Default is `"20m"`.
+- `destroy_on_disconnected_host`: By default the provider refuses to destroy
+  a running VM while CloudStack reports the VM's host as anything other than
+  `Up` (agent disconnected, connecting, in alert), and returns an error so
+  GARM retries the deletion on its next pass. CloudStack itself accepts an
+  expunge in that situation, removes the VM from its database and frees the
+  IP, but the StopCommand never reaches the hypervisor and the libvirt
+  domain keeps running with that IP. Set this to `true` only to force such
+  deletions through, for example for a host that is gone for good, and be
+  prepared to clean up orphaned domains by hand. Default is `false`.
 
 Each resource field (`zone`, `service_offering`, `template`, `project`)
 accepts either a symbolic name or a UUID. If the value looks like a UUID,
@@ -107,6 +117,24 @@ disable_jit_config = false
   # Pass through any additional environment variables if needed
   # environment_variables = ["CLOUDSTACK_"]
 ```
+
+## Resilience to management server restarts
+
+A CloudStack management server that is restarting answers API calls with
+an HTML error page rather than JSON; the client library reports this as
+`invalid character '<' looking for beginning of value`. The provider treats
+that, along with connection failures and HTTP 5xx responses, as the API
+being momentarily unavailable: idempotent calls (name resolution, instance
+lookups and listings, tagging, destroy submissions and async job polls) are
+retried with doubling delays of 1, 2, 4, 8 and 16 seconds, about 30 seconds
+in total, before the error is returned to GARM. Deploys are not retried this
+way, since a deploy whose response was lost may already have created a VM;
+GARM's own cleanup handles that case by name.
+
+Together with `destroy_on_disconnected_host` this covers the two ways a
+management server restart used to leave orphaned libvirt domains behind:
+deletions that failed outright, and deletions that CloudStack accepted while
+the hypervisor agents were still reconnecting.
 
 ## Troubleshooting
 

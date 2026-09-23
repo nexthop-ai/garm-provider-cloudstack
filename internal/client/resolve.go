@@ -59,8 +59,12 @@ func (c *CloudStackCli) resolve(ctx context.Context, kind, scope, nameOrID strin
 			return id, nil
 		}
 	}
-	id, err := lookup()
-	if err != nil {
+	var id string
+	if err := c.retryTransient(ctx, "resolve "+kind, func() error {
+		var err error
+		id, err = lookup()
+		return err
+	}); err != nil {
 		return "", err
 	}
 	if c.store != nil {

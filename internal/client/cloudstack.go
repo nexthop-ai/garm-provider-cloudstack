@@ -121,6 +121,14 @@ func (c *CloudStackCli) waitForJob(ctx context.Context, op, key, jobID string) (
 		p := c.syncClient.Asyncjob.NewQueryAsyncJobResultParams(jobID)
 		r, err := c.syncClient.Asyncjob.QueryAsyncJobResult(p)
 		if err != nil {
+			// The job keeps running on the management server whether or
+			// not we can reach it; a poll lost to a restart is not a
+			// verdict on the job. Keep polling until the overall timeout.
+			if util.IsTransientAPIErr(err) {
+				slog.Warn("CloudStack API unavailable while polling job, will poll again",
+					"op", op, "job_id", jobID, "error", err)
+				return false, nil
+			}
 			return false, err
 		}
 		switch r.Jobstatus {
@@ -221,7 +229,10 @@ func (c *CloudStackCli) CreateRunningInstance(ctx context.Context, spec *spec.Ru
 		"OSArch":             string(spec.BootstrapParams.OSArch),
 	}
 	tp := c.client.Resourcetags.NewCreateTagsParams([]string{resp.Id}, "UserVm", tags)
-	if _, err := c.client.Resourcetags.CreateTags(tp); err != nil {
+	if err := c.retryTransient(ctx, "createTags", func() error {
+		_, err := c.client.Resourcetags.CreateTags(tp)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("failed to tag VM: %w", err)
 	}
 
@@ -267,9 +278,11 @@ func (c *CloudStackCli) FindOneInstance(ctx context.Context, controllerID, ident
 	}
 	var vm *cs.VirtualMachine
 	err := c.withProjectRetry(ctx, func(projectID string) error {
-		var err error
-		vm, err = c.findOneInstance(controllerID, identifier, projectID)
-		return err
+		return c.retryTransient(ctx, "listVirtualMachines", func() error {
+			var err error
+			vm, err = c.findOneInstance(controllerID, identifier, projectID)
+			return err
+		})
 	})
 	return vm, err
 }
@@ -346,9 +359,11 @@ func (c *CloudStackCli) ListInstancesByPool(ctx context.Context, controllerID, p
 			p.SetProjectid(projectID)
 		}
 
-		var err error
-		resp, err = c.client.VirtualMachine.ListVirtualMachines(p)
-		return err
+		return c.retryTransient(ctx, "listVirtualMachines", func() error {
+			var err error
+			resp, err = c.client.VirtualMachine.ListVirtualMachines(p)
+			return err
+		})
 	})
 	if err != nil {
 		slog.Error("ListInstancesByPool: CloudStack API error",
@@ -446,6 +461,9 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 		}
 		return err
 	}
+	if err := c.ensureHostCanStop(ctx, vm); err != nil {
+		return err
+	}
 	params := c.syncClient.VirtualMachine.NewDestroyVirtualMachineParams(vm.Id)
 	if expunge {
 		params.SetExpunge(true)
@@ -476,7 +494,12 @@ func (c *CloudStackCli) DestroyInstance(ctx context.Context, identifier string, 
 // learned schedule. Expunging destroys take longer than plain ones, so the
 // two are tracked separately.
 func (c *CloudStackCli) destroy(ctx context.Context, params *cs.DestroyVirtualMachineParams) error {
-	resp, err := c.syncClient.VirtualMachine.DestroyVirtualMachine(params)
+	var resp *cs.DestroyVirtualMachineResponse
+	err := c.retryTransient(ctx, "destroyVirtualMachine", func() error {
+		var err error
+		resp, err = c.syncClient.VirtualMachine.DestroyVirtualMachine(params)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -506,4 +529,57 @@ func (c *CloudStackCli) isInstanceGoneOrDestroying(ctx context.Context, vmID str
 	}
 	state := strings.ToLower(vm.State)
 	return state == "destroyed" || state == "expunging", nil
+}
+
+// ErrHostNotUp is returned by DestroyInstance when the VM is running on a
+// host CloudStack cannot currently talk to. The caller (GARM) retries the
+// deletion later; the VM stays tracked until then.
+var ErrHostNotUp = errors.New("instance host is not up")
+
+// ensureHostCanStop refuses to destroy a VM that is running on a host whose
+// agent CloudStack is not connected to, unless the operator opted out.
+//
+// CloudStack accepts a destroy/expunge regardless of the host state. If the
+// host agent is disconnected at that moment (typically because the
+// management servers are restarting, which is also when the API answers
+// with HTML error pages), the StopCommand is never delivered: the VM row is
+// expunged, its NIC and IP are released, but the libvirt domain keeps
+// running. That domain later fights the next VM given the same IP over ARP
+// (2026-09-18 and 2026-09-21: 32 such domains, each breaking a fresh runner
+// for the duration of its job). Waiting for the host to be Up again costs a
+// few GARM retry cycles; a leaked domain costs days of flaky CI.
+func (c *CloudStackCli) ensureHostCanStop(ctx context.Context, vm *cs.VirtualMachine) error {
+	if c.cfg.DestroyOnDisconnectedHost || vm.Hostid == "" {
+		return nil
+	}
+	switch strings.ToLower(vm.State) {
+	case "stopped", "destroyed", "expunging", "error":
+		// Nothing is running that a StopCommand would have to reach. An
+		// "Error" VM may still have a domain behind it (a failed deploy),
+		// but CloudStack has already released its host, so there is
+		// nothing to wait for here.
+		return nil
+	}
+	var host *cs.Host
+	err := c.retryTransient(ctx, "listHosts", func() error {
+		var err error
+		host, _, err = c.client.Host.GetHostByID(vm.Hostid)
+		return err
+	})
+	if err != nil {
+		if util.IsCloudStackNotFoundErr(err) {
+			slog.Warn("DestroyInstance: VM host no longer exists in CloudStack, destroying anyway",
+				"instance", vm.Name, "vm_id", vm.Id, "host_id", vm.Hostid)
+			return nil
+		}
+		return fmt.Errorf("failed to check host %s of instance %s: %w", vm.Hostid, vm.Name, err)
+	}
+	if !strings.EqualFold(host.State, "Up") {
+		slog.Warn("DestroyInstance: refusing to destroy a running VM while its host is not Up; will be retried",
+			"instance", vm.Name, "vm_id", vm.Id, "vm_state", vm.State,
+			"host", host.Name, "host_state", host.State, "host_resource_state", host.Resourcestate)
+		return fmt.Errorf("%w: instance %s is %s on host %s which is %s (not Up); retry later or set destroy_on_disconnected_host",
+			ErrHostNotUp, vm.Name, vm.State, host.Name, host.State)
+	}
+	return nil
 }
